@@ -1,0 +1,15 @@
+# Binaries
+/unitsense-agent
+/unitsense-agent.exe
+/dist/
+/build/
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
