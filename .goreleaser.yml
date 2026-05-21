@@ -1,0 +1,58 @@
+version: 2
+project_name: unitsense-agent
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: unitsense-agent
+    main: ./cmd/unitsense-agent
+    binary: unitsense-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+
+archives:
+  - id: tarballs
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: 'checksums.txt'
+
+signs:
+  - id: cosign-keyless
+    cmd: cosign
+    artifacts: all
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.crt"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+
+release:
+  github:
+    owner: UnitSense
+    name: agent
+  draft: false
+  prerelease: auto
+  header: |
+    ## UnitSense Agent {{ .Tag }}
+
+    See [README.md](https://github.com/UnitSense/agent/blob/main/README.md) for install instructions.
