@@ -31,23 +31,33 @@ type rawEvent struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
 	Timestamp time.Time `json:"timestamp"`
-	Model     string    `json:"model,omitempty"`
-	Content   []struct {
-		Type  string `json:"type"`
-		Name  string `json:"name,omitempty"`
-		Input struct {
-			OldString string `json:"old_string,omitempty"`
-			NewString string `json:"new_string,omitempty"`
-			Command   string `json:"command,omitempty"`
-		} `json:"input,omitempty"`
-		IsError bool `json:"is_error,omitempty"`
-	} `json:"content,omitempty"`
+	Message   struct {
+		Model   string `json:"model,omitempty"`
+		Content []struct {
+			Type  string `json:"type"`
+			Name  string `json:"name,omitempty"`
+			Input struct {
+				OldString string `json:"old_string,omitempty"`
+				NewString string `json:"new_string,omitempty"`
+				Command   string `json:"command,omitempty"`
+			} `json:"input,omitempty"`
+			IsError bool `json:"is_error,omitempty"`
+		} `json:"content,omitempty"`
+	} `json:"message,omitempty"`
 }
 
 var (
-	commitRegex = regexp.MustCompile(`(?m)^git\s+commit\b`)
-	prRegex     = regexp.MustCompile(`(?m)^gh\s+pr\s+create\b`)
+	commitRegex        = regexp.MustCompile(`(?m)^git\s+commit\b`)
+	prRegex            = regexp.MustCompile(`(?m)^gh\s+pr\s+create\b`)
+	invalidModelKeyRe  = regexp.MustCompile(`[^A-Za-z0-9._/\-]`)
 )
+
+// sanitizeModelKey replaces characters not allowed by the server's models_used
+// key regex (/^[A-Za-z0-9._/-]+$/) with underscores, so values like
+// "<synthetic>" are stored as "_synthetic_" rather than rejected.
+func sanitizeModelKey(s string) string {
+	return invalidModelKeyRe.ReplaceAllString(s, "_")
+}
 
 func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, error) {
 	if _, err := os.Stat(p.rootDir); errors.Is(err, os.ErrNotExist) {
@@ -116,10 +126,10 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 
 			switch ev.Type {
 			case "assistant":
-				if ev.Model != "" {
-					b.models[ev.Model]++
+				if ev.Message.Model != "" {
+					b.models[sanitizeModelKey(ev.Message.Model)]++
 				}
-				for _, c := range ev.Content {
+				for _, c := range ev.Message.Content {
 					if c.Type == "tool_use" {
 						b.toolInvocations++
 						if c.Name == "Edit" || c.Name == "Write" {
@@ -141,7 +151,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 					}
 				}
 			case "user":
-				for _, c := range ev.Content {
+				for _, c := range ev.Message.Content {
 					if c.Type == "tool_result" && !c.IsError {
 						b.successfulToolInvocations++
 					}
