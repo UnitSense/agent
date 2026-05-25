@@ -1,4 +1,11 @@
-{"type":"session_start","session_id":"cdx-1","timestamp":"2026-05-21T11:00:00Z"}
-{"type":"assistant","session_id":"cdx-1","timestamp":"2026-05-21T11:00:05Z","model":"gpt-5.1"}
-{"type":"tool_call","session_id":"cdx-1","timestamp":"2026-05-21T11:00:10Z","tool":"shell","input":{"command":"ls"}}
-{"type":"tool_result","session_id":"cdx-1","timestamp":"2026-05-21T11:00:11Z","success":true}
+{"timestamp":"2026-05-21T11:00:00Z","type":"session_meta","payload":{"id":"cdx-test-1","cwd":"/tmp","originator":"codex-tui","cli_version":"0.120.0","model_provider":"openai"}}
+{"timestamp":"2026-05-21T11:00:01Z","type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5.1","approval_policy":"on-request"}}
+{"timestamp":"2026-05-21T11:00:05Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-05-21T11:00:10Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}"}}
+{"timestamp":"2026-05-21T11:00:11Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"c1","command":["bash","-lc","ls"],"exit_code":0,"status":"completed"}}
+{"timestamp":"2026-05-21T11:00:20Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"..."}}
+{"timestamp":"2026-05-21T11:00:21Z","type":"event_msg","payload":{"type":"patch_apply_end","call_id":"c2","success":true,"status":"completed"}}
+{"timestamp":"2026-05-21T11:00:30Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}"}}
+{"timestamp":"2026-05-21T11:00:31Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"c3","command":["bash","-lc","git commit -m wip"],"exit_code":0,"status":"completed"}}
+{"timestamp":"2026-05-21T11:00:40Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}"}}
+{"timestamp":"2026-05-21T11:00:41Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"c4","command":["bash","-lc","gh pr create --title test"],"exit_code":1,"status":"completed"}}
