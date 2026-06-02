@@ -166,6 +166,9 @@ func aggregatesToEvents(aggs []parsers.DayAggregate) []map[string]any {
 		if len(a.ModelsUsed) > 0 {
 			ev["models_used"] = a.ModelsUsed
 		}
+		if len(a.ToolCallsByName) > 0 {
+			ev["tool_calls_by_name"] = a.ToolCallsByName
+		}
 		if a.EstimatedCostUSD != nil {
 			ev["estimated_cost_usd"] = *a.EstimatedCostUSD
 		}

@@ -13,7 +13,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "claude-code-parser-0.3.0"
+const ParserVersionConst = "claude-code-parser-0.4.0"
 
 type Parser struct {
 	rootDir string
@@ -70,6 +70,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		linesAdded, linesRemoved  int
 		commits, pullRequests     int
 		models                    map[string]int
+		toolsByName               map[string]int // NEW
 	}
 	byDate := map[string]*dayBucket{}
 	sessionDates := map[string]map[string]struct{ minTS, maxTS time.Time }{}
@@ -106,7 +107,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			dateStr := ev.Timestamp.UTC().Format("2006-01-02")
 			b := byDate[dateStr]
 			if b == nil {
-				b = &dayBucket{models: map[string]int{}}
+				b = &dayBucket{models: map[string]int{}, toolsByName: map[string]int{}}
 				byDate[dateStr] = b
 			}
 
@@ -132,6 +133,10 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 				for _, c := range ev.Message.Content {
 					if c.Type == "tool_use" {
 						b.toolInvocations++
+						toolName := c.Name
+						if toolName != "" {
+							b.toolsByName[toolName]++
+						}
 						if c.Name == "Edit" || c.Name == "Write" {
 							if c.Input.NewString != "" {
 								b.linesAdded += countLines(c.Input.NewString)
@@ -205,6 +210,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		}
 		if b.pullRequests > 0 {
 			agg.PullRequests = intPtr(b.pullRequests)
+		}
+		if len(b.toolsByName) > 0 {
+			agg.ToolCallsByName = b.toolsByName
 		}
 		out = append(out, agg)
 	}

@@ -19,6 +19,7 @@ type DayAggregate struct {
 	ToolInvocations           *int
 	SuccessfulToolInvocations *int
 	ModelsUsed                map[string]int
+	ToolCallsByName           map[string]int
 	EstimatedCostUSD          *float64
 	CostSource                string
 	MetricProvenance          map[string]string

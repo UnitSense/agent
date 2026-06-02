@@ -55,4 +55,10 @@ func TestParseFixture(t *testing.T) {
 	if a.ModelsUsed["gpt-5.1"] != 1 {
 		t.Errorf("ModelsUsed[gpt-5.1] = %d, want 1", a.ModelsUsed["gpt-5.1"])
 	}
+	if a.ToolCallsByName["exec_command"] != 3 {
+		t.Errorf("ToolCallsByName[exec_command] = %d, want 3", a.ToolCallsByName["exec_command"])
+	}
+	if a.ToolCallsByName["apply_patch"] != 1 {
+		t.Errorf("ToolCallsByName[apply_patch] = %d, want 1", a.ToolCallsByName["apply_patch"])
+	}
 }

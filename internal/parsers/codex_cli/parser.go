@@ -13,7 +13,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.2.0"
+const ParserVersionConst = "codex-cli-parser-0.3.0"
 
 var (
 	commitRegex  = regexp.MustCompile(`\bgit\s+commit\b`)
@@ -58,6 +58,7 @@ type eventMsgPayload struct {
 
 type responseItemPayload struct {
 	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 func sanitizeModelKey(raw string) string {
@@ -84,6 +85,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		commits                   int
 		pullRequests              int
 		models                    map[string]int
+		toolsByName               map[string]int // NEW
 	}
 
 	newBucket := func() *bucket {
@@ -91,6 +93,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			sessionTimes: map[string]*sessionTimes{},
 			sessionIDs:   map[string]struct{}{},
 			models:       map[string]int{},
+			toolsByName:  map[string]int{},
 		}
 	}
 
@@ -183,6 +186,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 				if err := json.Unmarshal(ev.Payload, &ri); err == nil {
 					if ri.Type == "function_call" || ri.Type == "custom_tool_call" {
 						b.toolInvocations++
+						if ri.Name != "" {
+							b.toolsByName[ri.Name]++
+						}
 					}
 				}
 
@@ -264,6 +270,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		if b.pullRequests > 0 {
 			pr := b.pullRequests
 			agg.PullRequests = &pr
+		}
+		if len(b.toolsByName) > 0 {
+			agg.ToolCallsByName = b.toolsByName
 		}
 		out = append(out, agg)
 	}

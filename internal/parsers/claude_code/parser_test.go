@@ -52,6 +52,15 @@ func TestParseFixture(t *testing.T) {
 	if a.MetricProvenance["lines_method"] != "edit_tool_input_estimate" {
 		t.Errorf("MetricProvenance.lines_method missing")
 	}
+	if len(a.ToolCallsByName) != 2 {
+		t.Errorf("ToolCallsByName has %d keys, want 2", len(a.ToolCallsByName))
+	}
+	if a.ToolCallsByName["Edit"] != 1 {
+		t.Errorf("ToolCallsByName[Edit] = %d, want 1", a.ToolCallsByName["Edit"])
+	}
+	if a.ToolCallsByName["Bash"] != 2 {
+		t.Errorf("ToolCallsByName[Bash] = %d, want 2", a.ToolCallsByName["Bash"])
+	}
 }
 
 func TestParseEmptyDir(t *testing.T) {
