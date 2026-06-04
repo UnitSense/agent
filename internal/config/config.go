@@ -20,7 +20,8 @@ type Config struct {
 	MachineLabel  string    `toml:"machine_label,omitempty"`
 	Providers     []string  `toml:"providers"`
 	DataTier      string    `toml:"data_tier"`
-	JitterSeconds int       `toml:"jitter_seconds"`
+	JitterSeconds   int       `toml:"jitter_seconds"`
+	EnableGitHints bool      `toml:"enable_git_hints"`
 }
 
 func DefaultPath() (string, error) {

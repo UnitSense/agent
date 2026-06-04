@@ -67,9 +67,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, p := range cfg.Providers {
 		switch p {
 		case "claude_code":
-			parserList = append(parserList, claude_code.NewParser(filepath.Join(home, ".claude", "projects")))
+			parserList = append(parserList, claude_code.NewParserWithOptions(
+				filepath.Join(home, ".claude", "projects"),
+				cfg.EnableGitHints,
+			))
 		case "codex_cli":
-			parserList = append(parserList, codex_cli.NewParser(filepath.Join(home, ".codex", "sessions")))
+			parserList = append(parserList, codex_cli.NewParserWithOptions(
+				filepath.Join(home, ".codex", "sessions"),
+				cfg.EnableGitHints,
+			))
 		}
 	}
 	if len(parserList) == 0 {

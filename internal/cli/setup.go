@@ -22,10 +22,11 @@ var setupCmd = &cobra.Command{
 }
 
 var (
-	setupServerURL string
-	setupTenant    string
-	setupEmail     string
-	setupTokenIn   bool
+	setupServerURL      string
+	setupTenant         string
+	setupEmail          string
+	setupTokenIn        bool
+	setupEnableGitHints bool
 )
 
 func init() {
@@ -33,6 +34,7 @@ func init() {
 	setupCmd.Flags().StringVar(&setupTenant, "tenant", "", "Tenant slug (will prompt if empty)")
 	setupCmd.Flags().StringVar(&setupEmail, "email", "", "Developer email (will prompt if empty)")
 	setupCmd.Flags().BoolVar(&setupTokenIn, "token-stdin", false, "Read registration token from stdin (no echo)")
+	setupCmd.Flags().BoolVar(&setupEnableGitHints, "enable-git-hints", false, "Opt in to local git hints (branch, commit SHAs, hashed remote URL) in session payloads")
 	RegisterCommand(setupCmd)
 }
 
@@ -108,15 +110,16 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := &config.Config{
-		ServerURL:     setupServerURL,
-		DeviceToken:   regRes.DeviceToken,
-		Tenant:        regRes.TenantSlug,
-		Email:         email,
-		MachineID:     machineID,
-		MachineLabel:  hostname,
-		Providers:     []string{"claude_code", "codex_cli"},
-		DataTier:      "metrics",
-		JitterSeconds: 30,
+		ServerURL:      setupServerURL,
+		DeviceToken:    regRes.DeviceToken,
+		Tenant:         regRes.TenantSlug,
+		Email:          email,
+		MachineID:      machineID,
+		MachineLabel:   hostname,
+		Providers:      []string{"claude_code", "codex_cli"},
+		DataTier:       "metrics",
+		JitterSeconds:  30,
+		EnableGitHints: setupEnableGitHints,
 	}
 	path, err := config.DefaultPath()
 	if err != nil {
@@ -127,6 +130,9 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Printf("Setup complete. Device registered as %s (developer_id=%s).\n", hostname, regRes.DeveloperID)
 	fmt.Printf("Config saved to %s\n", path)
+	if setupEnableGitHints {
+		fmt.Println("Git hints enabled: branch name, commit SHAs, and hashed remote URL will be included in session payloads.")
+	}
 	fmt.Println("\nNext: schedule periodic sync — `unitsense-agent install --schedule=10m`")
 	return nil
 }

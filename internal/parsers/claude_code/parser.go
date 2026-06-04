@@ -11,24 +11,25 @@ import (
 	"time"
 
 	"github.com/UnitSense/agent/internal/parsers"
+	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "claude-code-parser-0.6.0"
+const ParserVersionConst = "claude-code-parser-0.7.0"
 
 // Tool category buckets. Anything not matching defaults to "other".
 var toolCategory = map[string]string{
-	"Read":       "read",
-	"Glob":       "read",
-	"Grep":       "search",
-	"Edit":       "edit",
-	"MultiEdit":  "edit",
+	"Read":         "read",
+	"Glob":         "read",
+	"Grep":         "search",
+	"Edit":         "edit",
+	"MultiEdit":    "edit",
 	"NotebookEdit": "edit",
-	"Write":      "write",
-	"Bash":       "shell",
-	"BashOutput": "shell",
-	"KillShell":  "shell",
-	"WebFetch":   "fetch",
-	"WebSearch":  "search",
+	"Write":        "write",
+	"Bash":         "shell",
+	"BashOutput":   "shell",
+	"KillShell":    "shell",
+	"WebFetch":     "fetch",
+	"WebSearch":    "search",
 }
 
 func categorize(name string) string {
@@ -39,11 +40,17 @@ func categorize(name string) string {
 }
 
 type Parser struct {
-	rootDir string
+	rootDir        string
+	enableGitHints bool
 }
 
 func NewParser(rootDir string) *Parser {
 	return &Parser{rootDir: rootDir}
+}
+
+// NewParserWithOptions creates a parser with optional git hints support.
+func NewParserWithOptions(rootDir string, enableGitHints bool) *Parser {
+	return &Parser{rootDir: rootDir, enableGitHints: enableGitHints}
 }
 
 func (p *Parser) Provider() string      { return "agent_claude_code" }
@@ -76,9 +83,9 @@ type rawEvent struct {
 }
 
 var (
-	commitRegex        = regexp.MustCompile(`(?m)^git\s+commit\b`)
-	prRegex            = regexp.MustCompile(`(?m)^gh\s+pr\s+create\b`)
-	invalidModelKeyRe  = regexp.MustCompile(`[^A-Za-z0-9._/\-]`)
+	commitRegex       = regexp.MustCompile(`(?m)^git\s+commit\b`)
+	prRegex           = regexp.MustCompile(`(?m)^gh\s+pr\s+create\b`)
+	invalidModelKeyRe = regexp.MustCompile(`[^A-Za-z0-9._/\-]`)
 )
 
 // sanitizeModelKey replaces characters not allowed by the server's models_used
@@ -86,6 +93,16 @@ var (
 // "<synthetic>" are stored as "_synthetic_" rather than rejected.
 func sanitizeModelKey(s string) string {
 	return invalidModelKeyRe.ReplaceAllString(s, "_")
+}
+
+// decodeProjectDir converts a Claude Code encoded project directory name
+// (where "/" is replaced by "-") back to an approximate workspace path.
+// The result may be wrong for directories that contain real hyphens; git will
+// fail silently in that case (graceful-failure contract).
+func decodeProjectDir(encoded string) string {
+	// The encoded name starts with "-" representing the leading "/" of an
+	// absolute path. Replace all "-" with "/" to recover the path.
+	return strings.ReplaceAll(encoded, "-", "/")
 }
 
 func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, error) {
@@ -276,22 +293,28 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 // in the window. Token sums, model mix, tool counts (by category) are scoped
 // to events with that session ID. Session_date is the UTC date of the first
 // event in that session.
+//
+// When EnableGitHints is true, the workspace path is decoded from the project
+// directory name and git hints are extracted for each session's time window.
 func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.SessionSummary, error) {
 	if _, err := os.Stat(p.rootDir); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 
 	type sessionBucket struct {
-		sessionKey                string
-		startedAt                 time.Time
-		endedAt                   time.Time
-		models                    map[string]int
-		toolCounts                map[string]int
-		successfulTools           int
-		inputTokens               int64
-		outputTokens              int64
-		cacheReadTokens           int64
-		cacheCreationTokens       int64
+		sessionKey          string
+		startedAt           time.Time
+		endedAt             time.Time
+		models              map[string]int
+		toolCounts          map[string]int
+		successfulTools     int
+		inputTokens         int64
+		outputTokens        int64
+		cacheReadTokens     int64
+		cacheCreationTokens int64
+		// projectDir is the encoded project directory name (direct child of rootDir).
+		// Used to decode the workspace path for git hints.
+		projectDir string
 	}
 	bySession := map[string]*sessionBucket{}
 
@@ -307,6 +330,16 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 	})
 
 	for _, file := range jsonlPaths {
+		// The project directory is the immediate child of rootDir.
+		// filepath.Rel gives us the relative path; the first segment is the
+		// encoded workspace name.
+		relPath, _ := filepath.Rel(p.rootDir, file)
+		parts := strings.SplitN(relPath, string(filepath.Separator), 2)
+		projectDir := ""
+		if len(parts) > 0 {
+			projectDir = parts[0]
+		}
+
 		f, err := os.Open(file)
 		if err != nil {
 			continue
@@ -330,11 +363,12 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			b := bySession[ev.SessionID]
 			if b == nil {
 				b = &sessionBucket{
-					sessionKey:  ev.SessionID,
-					startedAt:   ev.Timestamp,
-					endedAt:     ev.Timestamp,
-					models:      map[string]int{},
-					toolCounts:  map[string]int{},
+					sessionKey: ev.SessionID,
+					startedAt:  ev.Timestamp,
+					endedAt:    ev.Timestamp,
+					models:     map[string]int{},
+					toolCounts: map[string]int{},
+					projectDir: projectDir,
 				}
 				bySession[ev.SessionID] = b
 			}
@@ -401,6 +435,16 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			v := b.cacheCreationTokens
 			s.CacheCreationTokens = &v
 		}
+
+		// Git hints (opt-in via EnableGitHints).
+		if p.enableGitHints && b.projectDir != "" {
+			workspacePath := decodeProjectDir(b.projectDir)
+			h := githints.Extract(workspacePath, b.startedAt, b.endedAt)
+			s.RepoRemoteHash = h.RepoRemoteHash
+			s.BranchName = h.BranchName
+			s.CommitSHAs = h.CommitSHAs
+		}
+
 		out = append(out, s)
 	}
 	return out, nil

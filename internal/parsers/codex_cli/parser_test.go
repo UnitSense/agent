@@ -1,6 +1,9 @@
 package codex_cli
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +15,13 @@ func TestProvider(t *testing.T) {
 	p := NewParser("/tmp/none")
 	if p.Provider() != "agent_codex_cli" {
 		t.Errorf("Provider = %q", p.Provider())
+	}
+}
+
+// TestParserVersionBump verifies the version constant reflects v0.6.0.
+func TestParserVersionBump(t *testing.T) {
+	if ParserVersionConst != "codex-cli-parser-0.6.0" {
+		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.6.0", ParserVersionConst)
 	}
 }
 
@@ -116,5 +126,106 @@ func TestParseFixture(t *testing.T) {
 	// Codex does not emit cache_creation tokens.
 	if a.CacheCreationTokens != nil {
 		t.Errorf("CacheCreationTokens = %v, want nil (Codex doesn't emit)", a.CacheCreationTokens)
+	}
+}
+
+// TestAggregateSessionsGitHintsDisabled verifies that git hints are NOT
+// populated when enableGitHints is false (the default).
+func TestAggregateSessionsGitHintsDisabled(t *testing.T) {
+	abs, _ := filepath.Abs("../../../testdata/codex_cli")
+	p := NewParserWithOptions(abs, false)
+
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.RepoRemoteHash != "" {
+		t.Errorf("RepoRemoteHash should be empty when git hints disabled, got %q", s.RepoRemoteHash)
+	}
+	if s.BranchName != "" {
+		t.Errorf("BranchName should be empty when git hints disabled, got %q", s.BranchName)
+	}
+	if len(s.CommitSHAs) != 0 {
+		t.Errorf("CommitSHAs should be empty when git hints disabled, got %v", s.CommitSHAs)
+	}
+}
+
+// TestAggregateSessionsGitHintsEnabled verifies that git hints ARE populated
+// when enableGitHints is true. The session_meta CWD field is used as the
+// workspace path — for Codex CLI this is straightforward (no encoding needed).
+func TestAggregateSessionsGitHintsEnabled(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	workspaceDir := t.TempDir()
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", workspaceDir)
+	runGit("-C", workspaceDir, "checkout", "-b", "codex-hints-branch")
+	os.WriteFile(filepath.Join(workspaceDir, "f.txt"), []byte("x"), 0644)
+	runGit("-C", workspaceDir, "add", "f.txt")
+
+	commitTime := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
+	cmd := exec.Command("git", "-C", workspaceDir, "commit", "-m", "codex test")
+	cmd.Env = append(gitEnv, "GIT_AUTHOR_DATE="+commitTime, "GIT_COMMITTER_DATE="+commitTime)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	// Build a JSONL session file that points cwd at our temp workspace dir
+	rootDir := t.TempDir()
+	sessionTime := time.Now().UTC().Add(-1 * time.Hour)
+	sessionMeta := fmt.Sprintf(
+		`{"timestamp":"%s","type":"session_meta","payload":{"id":"cdx-hints-1","cwd":"%s","originator":"codex-tui"}}`,
+		sessionTime.Format(time.RFC3339),
+		workspaceDir,
+	)
+	assistantLine := fmt.Sprintf(
+		`{"timestamp":"%s","type":"turn_context","payload":{"model":"gpt-test"}}`,
+		sessionTime.Add(time.Minute).Format(time.RFC3339),
+	)
+	jsonlPath := filepath.Join(rootDir, "session.jsonl")
+	content := sessionMeta + "\n" + assistantLine + "\n"
+	if err := os.WriteFile(jsonlPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParserWithOptions(rootDir, true)
+	from := sessionTime.Add(-1 * time.Hour)
+	to := sessionTime.Add(3 * time.Hour)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.BranchName != "codex-hints-branch" {
+		t.Errorf("BranchName = %q, want codex-hints-branch", s.BranchName)
+	}
+	// No remote → hash empty
+	if s.RepoRemoteHash != "" {
+		t.Errorf("RepoRemoteHash = %q, want empty (no remote)", s.RepoRemoteHash)
 	}
 }

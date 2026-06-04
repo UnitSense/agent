@@ -11,19 +11,20 @@ import (
 	"time"
 
 	"github.com/UnitSense/agent/internal/parsers"
+	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.5.0"
+const ParserVersionConst = "codex-cli-parser-0.6.0"
 
 // Codex tool-name categorization. Codex CLI emits a small set of canonical
 // names so the mapping is short.
 var codexToolCategory = map[string]string{
-	"exec_command":        "shell",
-	"apply_patch":         "edit",
-	"read_file":           "read",
-	"list_dir":            "read",
-	"grep":                "search",
-	"web_fetch":           "fetch",
+	"exec_command": "shell",
+	"apply_patch":  "edit",
+	"read_file":    "read",
+	"list_dir":     "read",
+	"grep":         "search",
+	"web_fetch":    "fetch",
 }
 
 func categorize(name string) string {
@@ -34,18 +35,24 @@ func categorize(name string) string {
 }
 
 var (
-	commitRegex  = regexp.MustCompile(`\bgit\s+commit\b`)
-	prRegex      = regexp.MustCompile(`\bgh\s+pr\s+create\b`)
-	modelKeyRe   = regexp.MustCompile(`[^A-Za-z0-9._/\-]+`)
+	commitRegex = regexp.MustCompile(`\bgit\s+commit\b`)
+	prRegex     = regexp.MustCompile(`\bgh\s+pr\s+create\b`)
+	modelKeyRe  = regexp.MustCompile(`[^A-Za-z0-9._/\-]+`)
 )
 
 // Parser reads Codex CLI JSONL session files from ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 type Parser struct {
-	rootDir string
+	rootDir        string
+	enableGitHints bool
 }
 
 func NewParser(rootDir string) *Parser {
 	return &Parser{rootDir: rootDir}
+}
+
+// NewParserWithOptions creates a parser with optional git hints support.
+func NewParserWithOptions(rootDir string, enableGitHints bool) *Parser {
+	return &Parser{rootDir: rootDir, enableGitHints: enableGitHints}
 }
 
 func (p *Parser) Provider() string      { return "agent_codex_cli" }
@@ -60,7 +67,8 @@ type rawEvent struct {
 }
 
 type sessionMetaPayload struct {
-	ID string `json:"id"`
+	ID  string `json:"id"`
+	CWD string `json:"cwd"`
 }
 
 type turnContextPayload struct {
@@ -336,21 +344,26 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 // AggregateSessions emits one SessionSummary per Codex CLI session. Each
 // rollout-*.jsonl file is normally one session, identified by the first
 // session_meta event's `id` field.
+//
+// When EnableGitHints is true, the CWD from session_meta is used as the
+// workspace path for git hint extraction.
 func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.SessionSummary, error) {
 	if _, err := os.Stat(p.rootDir); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 
 	type sessionBucket struct {
-		sessionKey          string
-		startedAt           time.Time
-		endedAt             time.Time
-		models              map[string]int
-		toolCounts          map[string]int
-		successfulTools     int
-		inputTokens         int64
-		outputTokens        int64
-		cacheReadTokens     int64
+		sessionKey      string
+		startedAt       time.Time
+		endedAt         time.Time
+		models          map[string]int
+		toolCounts      map[string]int
+		successfulTools int
+		inputTokens     int64
+		outputTokens    int64
+		cacheReadTokens int64
+		// cwd from session_meta, used for git hints
+		cwd string
 	}
 	bySession := map[string]*sessionBucket{}
 
@@ -390,6 +403,7 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 							endedAt:    ev.Timestamp,
 							models:     map[string]int{},
 							toolCounts: map[string]int{},
+							cwd:        sm.CWD,
 						}
 						bySession[currentSessionID] = b
 					}
@@ -481,6 +495,15 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			s.CacheReadTokens = &v
 		}
 		// Codex doesn't emit cache_creation; field stays nil.
+
+		// Git hints (opt-in via EnableGitHints).
+		if p.enableGitHints && b.cwd != "" {
+			h := githints.Extract(b.cwd, b.startedAt, b.endedAt)
+			s.RepoRemoteHash = h.RepoRemoteHash
+			s.BranchName = h.BranchName
+			s.CommitSHAs = h.CommitSHAs
+		}
+
 		out = append(out, s)
 	}
 	return out, nil

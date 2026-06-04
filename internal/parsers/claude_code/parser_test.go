@@ -1,6 +1,9 @@
 package claude_code
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -148,5 +151,137 @@ func TestProvider(t *testing.T) {
 	}
 	if p.ParserVersion() == "" {
 		t.Errorf("ParserVersion empty")
+	}
+	if p.ParserVersion() != ParserVersionConst {
+		t.Errorf("ParserVersion = %q, want %q", p.ParserVersion(), ParserVersionConst)
+	}
+}
+
+// TestParserVersionBump verifies the version constant reflects v0.7.0.
+func TestParserVersionBump(t *testing.T) {
+	if ParserVersionConst != "claude-code-parser-0.7.0" {
+		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.7.0", ParserVersionConst)
+	}
+}
+
+// TestAggregateSessionsGitHintsDisabled verifies that git hints are NOT
+// populated when enableGitHints is false (the default).
+func TestAggregateSessionsGitHintsDisabled(t *testing.T) {
+	abs, _ := filepath.Abs("../../../testdata/claude_code")
+	p := NewParserWithOptions(abs, false)
+
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.RepoRemoteHash != "" {
+		t.Errorf("RepoRemoteHash should be empty when git hints disabled, got %q", s.RepoRemoteHash)
+	}
+	if s.BranchName != "" {
+		t.Errorf("BranchName should be empty when git hints disabled, got %q", s.BranchName)
+	}
+	if len(s.CommitSHAs) != 0 {
+		t.Errorf("CommitSHAs should be empty when git hints disabled, got %v", s.CommitSHAs)
+	}
+}
+
+// TestAggregateSessionsGitHintsEnabled verifies that git hints ARE populated
+// when enableGitHints is true, using a real git repo. The test builds the
+// project directory structure using a deterministic path under /tmp with no
+// hyphens (so the Claude Code path encoding round-trips correctly).
+func TestAggregateSessionsGitHintsEnabled(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	// Use a fixed test directory under /tmp with no hyphens so that the
+	// encoding (/ → -) round-trips without ambiguity.
+	// Use a unique suffix per test run to avoid collisions.
+	testID := fmt.Sprintf("%d", time.Now().UnixNano())
+	rootDir := fmt.Sprintf("/tmp/unitsensetest%s/projects", testID)
+	workspaceDir := fmt.Sprintf("/tmp/unitsensetest%s/workspace/myproject", testID)
+	t.Cleanup(func() { os.RemoveAll(fmt.Sprintf("/tmp/unitsensetest%s", testID)) })
+
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init", workspaceDir)
+	runGit("-C", workspaceDir, "checkout", "-b", "hints-branch")
+	os.WriteFile(filepath.Join(workspaceDir, "f.txt"), []byte("x"), 0644)
+	runGit("-C", workspaceDir, "add", "f.txt")
+
+	commitTime := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
+	cmd := exec.Command("git", "-C", workspaceDir, "commit", "-m", "test")
+	cmd.Env = append(gitEnv, "GIT_AUTHOR_DATE="+commitTime, "GIT_COMMITTER_DATE="+commitTime)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	// Encode the workspace path: replace "/" with "-".
+	// Since workspaceDir is /tmp/unitsensetest.../workspace/myproject (no hyphens
+	// except within the test ID which is all digits), this round-trips correctly.
+	encodedDirName := ""
+	for _, c := range workspaceDir {
+		if c == '/' {
+			encodedDirName += "-"
+		} else {
+			encodedDirName += string(c)
+		}
+	}
+
+	projDir := filepath.Join(rootDir, encodedDirName)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionTime := time.Now().UTC().Add(-1 * time.Hour)
+	sessionJSON := `{"type":"assistant","sessionId":"git-test-sess","timestamp":"` +
+		sessionTime.Format(time.RFC3339) + `","message":{"model":"claude-test","content":[],"usage":{"input_tokens":10,"output_tokens":5}}}`
+	jsonlPath := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(sessionJSON+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParserWithOptions(rootDir, true)
+	from := sessionTime.Add(-1 * time.Hour)
+	to := sessionTime.Add(2 * time.Hour)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.BranchName != "hints-branch" {
+		t.Errorf("BranchName = %q, want hints-branch", s.BranchName)
+	}
+	// No remote configured → hash empty
+	if s.RepoRemoteHash != "" {
+		t.Errorf("RepoRemoteHash = %q, want empty (no remote)", s.RepoRemoteHash)
 	}
 }
