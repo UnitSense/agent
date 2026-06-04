@@ -13,7 +13,25 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.4.0"
+const ParserVersionConst = "codex-cli-parser-0.5.0"
+
+// Codex tool-name categorization. Codex CLI emits a small set of canonical
+// names so the mapping is short.
+var codexToolCategory = map[string]string{
+	"exec_command":        "shell",
+	"apply_patch":         "edit",
+	"read_file":           "read",
+	"list_dir":            "read",
+	"grep":                "search",
+	"web_fetch":           "fetch",
+}
+
+func categorize(name string) string {
+	if c, ok := codexToolCategory[name]; ok {
+		return c
+	}
+	return "other"
+}
 
 var (
 	commitRegex  = regexp.MustCompile(`\bgit\s+commit\b`)
@@ -311,6 +329,159 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		// Codex CLI does not emit cache_creation tokens (only cached_input_tokens
 		// which we map to CacheReadTokens). CacheCreationTokens stays nil.
 		out = append(out, agg)
+	}
+	return out, nil
+}
+
+// AggregateSessions emits one SessionSummary per Codex CLI session. Each
+// rollout-*.jsonl file is normally one session, identified by the first
+// session_meta event's `id` field.
+func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.SessionSummary, error) {
+	if _, err := os.Stat(p.rootDir); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	type sessionBucket struct {
+		sessionKey          string
+		startedAt           time.Time
+		endedAt             time.Time
+		models              map[string]int
+		toolCounts          map[string]int
+		successfulTools     int
+		inputTokens         int64
+		outputTokens        int64
+		cacheReadTokens     int64
+	}
+	bySession := map[string]*sessionBucket{}
+
+	_ = filepath.WalkDir(p.rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+
+		var currentSessionID string
+
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+		for scanner.Scan() {
+			var ev rawEvent
+			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+				continue
+			}
+			if ev.Timestamp.IsZero() || ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
+				continue
+			}
+
+			if ev.Type == "session_meta" {
+				var sm sessionMetaPayload
+				if err := json.Unmarshal(ev.Payload, &sm); err == nil && sm.ID != "" {
+					currentSessionID = sm.ID
+					b := bySession[currentSessionID]
+					if b == nil {
+						b = &sessionBucket{
+							sessionKey: currentSessionID,
+							startedAt:  ev.Timestamp,
+							endedAt:    ev.Timestamp,
+							models:     map[string]int{},
+							toolCounts: map[string]int{},
+						}
+						bySession[currentSessionID] = b
+					}
+				}
+				continue
+			}
+			if currentSessionID == "" {
+				continue
+			}
+			b := bySession[currentSessionID]
+			if b == nil {
+				continue
+			}
+			if ev.Timestamp.Before(b.startedAt) {
+				b.startedAt = ev.Timestamp
+			}
+			if ev.Timestamp.After(b.endedAt) {
+				b.endedAt = ev.Timestamp
+			}
+
+			switch ev.Type {
+			case "turn_context":
+				var tc turnContextPayload
+				if err := json.Unmarshal(ev.Payload, &tc); err == nil && tc.Model != "" {
+					b.models[sanitizeModelKey(tc.Model)]++
+				}
+			case "response_item":
+				var ri responseItemPayload
+				if err := json.Unmarshal(ev.Payload, &ri); err == nil {
+					if ri.Type == "function_call" || ri.Type == "custom_tool_call" {
+						if ri.Name != "" {
+							b.toolCounts[categorize(ri.Name)]++
+						}
+					}
+				}
+			case "event_msg":
+				var em eventMsgPayload
+				if err := json.Unmarshal(ev.Payload, &em); err != nil {
+					continue
+				}
+				switch em.Type {
+				case "token_count":
+					if em.Info != nil && em.Info.LastTokenUsage != nil {
+						u := em.Info.LastTokenUsage
+						b.inputTokens += u.InputTokens
+						b.cacheReadTokens += u.CachedInputTokens
+						b.outputTokens += u.OutputTokens + u.ReasoningOutputTokens
+					}
+				case "exec_command_end":
+					if em.ExitCode != nil && *em.ExitCode == 0 {
+						b.successfulTools++
+					}
+				case "patch_apply_end":
+					if em.Success != nil && *em.Success {
+						b.successfulTools++
+					}
+				}
+			}
+		}
+		return nil
+	})
+
+	out := make([]parsers.SessionSummary, 0, len(bySession))
+	for _, b := range bySession {
+		elapsed := int(b.endedAt.Sub(b.startedAt).Minutes())
+		s := parsers.SessionSummary{
+			SessionKey:     b.sessionKey,
+			SessionDate:    time.Date(b.startedAt.Year(), b.startedAt.Month(), b.startedAt.Day(), 0, 0, 0, 0, time.UTC),
+			StartedAt:      b.startedAt,
+			EndedAt:        b.endedAt,
+			ElapsedMinutes: elapsed,
+			ModelsUsed:     b.models,
+			ToolCounts:     b.toolCounts,
+		}
+		if b.successfulTools > 0 {
+			n := b.successfulTools
+			s.SuccessfulToolInvocations = &n
+		}
+		if b.inputTokens > 0 {
+			v := b.inputTokens
+			s.InputTokens = &v
+		}
+		if b.outputTokens > 0 {
+			v := b.outputTokens
+			s.OutputTokens = &v
+		}
+		if b.cacheReadTokens > 0 {
+			v := b.cacheReadTokens
+			s.CacheReadTokens = &v
+		}
+		// Codex doesn't emit cache_creation; field stays nil.
+		out = append(out, s)
 	}
 	return out, nil
 }

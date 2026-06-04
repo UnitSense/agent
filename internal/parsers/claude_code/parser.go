@@ -13,7 +13,30 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "claude-code-parser-0.5.0"
+const ParserVersionConst = "claude-code-parser-0.6.0"
+
+// Tool category buckets. Anything not matching defaults to "other".
+var toolCategory = map[string]string{
+	"Read":       "read",
+	"Glob":       "read",
+	"Grep":       "search",
+	"Edit":       "edit",
+	"MultiEdit":  "edit",
+	"NotebookEdit": "edit",
+	"Write":      "write",
+	"Bash":       "shell",
+	"BashOutput": "shell",
+	"KillShell":  "shell",
+	"WebFetch":   "fetch",
+	"WebSearch":  "search",
+}
+
+func categorize(name string) string {
+	if c, ok := toolCategory[name]; ok {
+		return c
+	}
+	return "other"
+}
 
 type Parser struct {
 	rootDir string
@@ -245,6 +268,140 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			agg.CacheCreationTokens = &v
 		}
 		out = append(out, agg)
+	}
+	return out, nil
+}
+
+// AggregateSessions emits one SessionSummary per Claude Code session ID seen
+// in the window. Token sums, model mix, tool counts (by category) are scoped
+// to events with that session ID. Session_date is the UTC date of the first
+// event in that session.
+func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.SessionSummary, error) {
+	if _, err := os.Stat(p.rootDir); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	type sessionBucket struct {
+		sessionKey                string
+		startedAt                 time.Time
+		endedAt                   time.Time
+		models                    map[string]int
+		toolCounts                map[string]int
+		successfulTools           int
+		inputTokens               int64
+		outputTokens              int64
+		cacheReadTokens           int64
+		cacheCreationTokens       int64
+	}
+	bySession := map[string]*sessionBucket{}
+
+	var jsonlPaths []string
+	_ = filepath.WalkDir(p.rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, ".jsonl") {
+			jsonlPaths = append(jsonlPaths, path)
+		}
+		return nil
+	})
+
+	for _, file := range jsonlPaths {
+		f, err := os.Open(file)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+		for scanner.Scan() {
+			var ev rawEvent
+			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+				continue
+			}
+			if ev.Timestamp.IsZero() {
+				continue
+			}
+			if ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
+				continue
+			}
+			if ev.SessionID == "" {
+				continue
+			}
+			b := bySession[ev.SessionID]
+			if b == nil {
+				b = &sessionBucket{
+					sessionKey:  ev.SessionID,
+					startedAt:   ev.Timestamp,
+					endedAt:     ev.Timestamp,
+					models:      map[string]int{},
+					toolCounts:  map[string]int{},
+				}
+				bySession[ev.SessionID] = b
+			}
+			if ev.Timestamp.Before(b.startedAt) {
+				b.startedAt = ev.Timestamp
+			}
+			if ev.Timestamp.After(b.endedAt) {
+				b.endedAt = ev.Timestamp
+			}
+
+			switch ev.Type {
+			case "assistant":
+				if ev.Message.Model != "" {
+					b.models[sanitizeModelKey(ev.Message.Model)]++
+				}
+				b.inputTokens += ev.Message.Usage.InputTokens
+				b.outputTokens += ev.Message.Usage.OutputTokens
+				b.cacheReadTokens += ev.Message.Usage.CacheReadInputTokens
+				b.cacheCreationTokens += ev.Message.Usage.CacheCreationInputTokens
+				for _, c := range ev.Message.Content {
+					if c.Type == "tool_use" && c.Name != "" {
+						b.toolCounts[categorize(c.Name)]++
+					}
+				}
+			case "user":
+				for _, c := range ev.Message.Content {
+					if c.Type == "tool_result" && !c.IsError {
+						b.successfulTools++
+					}
+				}
+			}
+		}
+		f.Close()
+	}
+
+	out := make([]parsers.SessionSummary, 0, len(bySession))
+	for _, b := range bySession {
+		elapsed := int(b.endedAt.Sub(b.startedAt).Minutes())
+		s := parsers.SessionSummary{
+			SessionKey:     b.sessionKey,
+			SessionDate:    time.Date(b.startedAt.Year(), b.startedAt.Month(), b.startedAt.Day(), 0, 0, 0, 0, time.UTC),
+			StartedAt:      b.startedAt,
+			EndedAt:        b.endedAt,
+			ElapsedMinutes: elapsed,
+			ModelsUsed:     b.models,
+			ToolCounts:     b.toolCounts,
+		}
+		if b.successfulTools > 0 {
+			s.SuccessfulToolInvocations = intPtr(b.successfulTools)
+		}
+		if b.inputTokens > 0 {
+			v := b.inputTokens
+			s.InputTokens = &v
+		}
+		if b.outputTokens > 0 {
+			v := b.outputTokens
+			s.OutputTokens = &v
+		}
+		if b.cacheReadTokens > 0 {
+			v := b.cacheReadTokens
+			s.CacheReadTokens = &v
+		}
+		if b.cacheCreationTokens > 0 {
+			v := b.cacheCreationTokens
+			s.CacheCreationTokens = &v
+		}
+		out = append(out, s)
 	}
 	return out, nil
 }

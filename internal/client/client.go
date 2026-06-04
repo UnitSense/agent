@@ -67,6 +67,20 @@ type EventsResponse struct {
 	Duplicate            bool   `json:"duplicate"`
 }
 
+type SessionsRequest struct {
+	RequestID        uuid.UUID        `json:"request_id"`
+	AgentVersion     string           `json:"agent_version"`
+	ParserVersion    string           `json:"parser_version"`
+	Provider         string           `json:"provider"`
+	SessionSummaries []map[string]any `json:"session_summaries"`
+}
+
+type SessionsResponse struct {
+	AcceptedCount int    `json:"accepted_count"`
+	RunID         string `json:"run_id"`
+	Duplicate     bool   `json:"duplicate"`
+}
+
 func (c *Client) Validate() (*ValidateResponse, error) {
 	var resp ValidateResponse
 	if err := c.do("POST", "/api/v1/agent/validate", nil, &resp); err != nil {
@@ -86,6 +100,14 @@ func (c *Client) Register(req RegisterRequest) (*RegisterResponse, error) {
 func (c *Client) PostEvents(req EventsRequest) (*EventsResponse, error) {
 	var resp EventsResponse
 	if err := c.do("POST", "/api/v1/agent/events", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) PostSessions(req SessionsRequest) (*SessionsResponse, error) {
+	var resp SessionsResponse
+	if err := c.do("POST", "/api/v1/agent/sessions", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

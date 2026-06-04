@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -90,32 +92,67 @@ func runRun(cmd *cobra.Command, args []string) error {
 			}
 			continue
 		}
-		if len(aggs) == 0 {
+		if len(aggs) > 0 {
+			events := aggregatesToEvents(aggs)
+			req := client.EventsRequest{
+				RequestID:     uuid.New(),
+				AgentVersion:  Version,
+				ParserVersion: p.ParserVersion(),
+				Provider:      p.Provider(),
+				Events:        events,
+			}
+			if runDry {
+				fmt.Printf("--- DRY: %s events ---\n", p.Provider())
+				fmt.Printf("request_id=%s events=%d\n", req.RequestID, len(events))
+			} else {
+				resp, err := cl.PostEvents(req)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "post events (%s): %v\n", p.Provider(), err)
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					totalSent += resp.AcceptedCount
+					fmt.Printf("%s: %d events accepted (run=%s)\n", p.Provider(), resp.AcceptedCount, resp.RunID)
+				}
+			}
+		}
+
+		// Per-session emission (added in agent v0.4.0). Sessions enrich the
+		// daily aggregate path; if AggregateSessions returns nothing, skip.
+		sessions, sErr := p.AggregateSessions(tw)
+		if sErr != nil {
+			fmt.Fprintf(os.Stderr, "parser %s sessions error: %v\n", p.Tool(), sErr)
+			if firstErr == nil {
+				firstErr = sErr
+			}
 			continue
 		}
-		events := aggregatesToEvents(aggs)
-		req := client.EventsRequest{
-			RequestID:     uuid.New(),
-			AgentVersion:  Version,
-			ParserVersion: p.ParserVersion(),
-			Provider:      p.Provider(),
-			Events:        events,
+		if len(sessions) == 0 {
+			continue
+		}
+		sessEvents := sessionsToPayload(sessions, cfg.MachineID.String())
+		sessReq := client.SessionsRequest{
+			RequestID:        uuid.New(),
+			AgentVersion:     Version,
+			ParserVersion:    p.ParserVersion(),
+			Provider:         p.Provider(),
+			SessionSummaries: sessEvents,
 		}
 		if runDry {
-			fmt.Printf("--- DRY: %s ---\n", p.Provider())
-			fmt.Printf("request_id=%s events=%d\n", req.RequestID, len(events))
+			fmt.Printf("--- DRY: %s sessions ---\n", p.Provider())
+			fmt.Printf("request_id=%s sessions=%d\n", sessReq.RequestID, len(sessEvents))
 			continue
 		}
-		resp, err := cl.PostEvents(req)
+		sessResp, err := cl.PostSessions(sessReq)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "post events (%s): %v\n", p.Provider(), err)
+			fmt.Fprintf(os.Stderr, "post sessions (%s): %v\n", p.Provider(), err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		totalSent += resp.AcceptedCount
-		fmt.Printf("%s: %d events accepted (run=%s)\n", p.Provider(), resp.AcceptedCount, resp.RunID)
+		fmt.Printf("%s: %d sessions accepted (run=%s)\n", p.Provider(), sessResp.AcceptedCount, sessResp.RunID)
 	}
 
 	duration := time.Since(start)
@@ -133,6 +170,59 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	_ = state.Save(statePath, st)
 	return firstErr
+}
+
+// sessionsToPayload converts SessionSummary structs into JSON-ready maps for
+// the /api/v1/agent/sessions endpoint. Hashes the raw session key using the
+// agent's machine_id + session_date so the server never sees raw filesystem
+// session IDs (privacy contract from the session drilldown spec).
+func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []map[string]any {
+	out := make([]map[string]any, 0, len(sessions))
+	for _, s := range sessions {
+		hasher := sha256.New()
+		hasher.Write([]byte(machineID))
+		hasher.Write([]byte(":"))
+		hasher.Write([]byte(s.SessionKey))
+		hasher.Write([]byte(":"))
+		hasher.Write([]byte(s.SessionDate.Format("2006-01-02")))
+		keyHash := hex.EncodeToString(hasher.Sum(nil))
+
+		ev := map[string]any{
+			"session_key_hash": keyHash,
+			"session_date":     s.SessionDate.Format("2006-01-02"),
+			"started_at":       s.StartedAt.Format(time.RFC3339),
+			"ended_at":         s.EndedAt.Format(time.RFC3339),
+			"elapsed_minutes":  s.ElapsedMinutes,
+			"models_used":      s.ModelsUsed,
+			"tool_counts":      s.ToolCounts,
+		}
+		if s.SuccessfulToolInvocations != nil {
+			ev["successful_tool_invocations"] = *s.SuccessfulToolInvocations
+		}
+		if s.InputTokens != nil {
+			ev["input_tokens"] = *s.InputTokens
+		}
+		if s.OutputTokens != nil {
+			ev["output_tokens"] = *s.OutputTokens
+		}
+		if s.CacheReadTokens != nil {
+			ev["cache_read_tokens"] = *s.CacheReadTokens
+		}
+		if s.CacheCreationTokens != nil {
+			ev["cache_creation_tokens"] = *s.CacheCreationTokens
+		}
+		if s.RepoRemoteHash != "" {
+			ev["repo_remote_hash"] = s.RepoRemoteHash
+		}
+		if s.BranchName != "" {
+			ev["branch_name"] = s.BranchName
+		}
+		if len(s.CommitSHAs) > 0 {
+			ev["commit_shas"] = s.CommitSHAs
+		}
+		out = append(out, ev)
+	}
+	return out
 }
 
 func aggregatesToEvents(aggs []parsers.DayAggregate) []map[string]any {

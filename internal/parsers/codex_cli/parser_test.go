@@ -15,6 +15,44 @@ func TestProvider(t *testing.T) {
 	}
 }
 
+func TestAggregateSessions(t *testing.T) {
+	abs, _ := filepath.Abs("../../../testdata/codex_cli")
+	p := NewParser(abs)
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	if s.SessionKey != "cdx-test-1" {
+		t.Errorf("SessionKey = %q, want cdx-test-1", s.SessionKey)
+	}
+	// 2 non-null token_count events: input=800, output=300 (incl reasoning), cache_read=1600
+	if s.InputTokens == nil || *s.InputTokens != 800 {
+		t.Errorf("InputTokens = %v, want 800", s.InputTokens)
+	}
+	if s.OutputTokens == nil || *s.OutputTokens != 300 {
+		t.Errorf("OutputTokens = %v, want 300", s.OutputTokens)
+	}
+	if s.CacheReadTokens == nil || *s.CacheReadTokens != 1600 {
+		t.Errorf("CacheReadTokens = %v, want 1600", s.CacheReadTokens)
+	}
+	if s.CacheCreationTokens != nil {
+		t.Errorf("CacheCreationTokens should be nil for Codex; got %v", s.CacheCreationTokens)
+	}
+	// 3 exec_command + 1 custom_tool_call. exec_command -> shell, apply_patch -> edit
+	if s.ToolCounts["shell"] != 3 {
+		t.Errorf("ToolCounts[shell] = %d, want 3", s.ToolCounts["shell"])
+	}
+	if s.ToolCounts["edit"] != 1 {
+		t.Errorf("ToolCounts[edit] = %d, want 1", s.ToolCounts["edit"])
+	}
+}
+
 func TestParseFixture(t *testing.T) {
 	abs, _ := filepath.Abs("../../../testdata/codex_cli")
 	p := NewParser(abs)
