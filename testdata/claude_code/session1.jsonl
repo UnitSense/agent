@@ -1,4 +1,5 @@
 {"type":"summary","sessionId":"sess-1","timestamp":"2026-05-21T10:00:00Z"}
+{"type":"attachment","sessionId":"sess-1","timestamp":"2026-05-21T10:00:01Z","cwd":"/Users/test-user/my-project","gitBranch":"feature/my-hyphenated-branch"}
 {"type":"user","sessionId":"sess-1","timestamp":"2026-05-21T10:00:05Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
 {"type":"assistant","sessionId":"sess-1","timestamp":"2026-05-21T10:00:08Z","message":{"model":"claude-sonnet-4-7","content":[{"type":"text","text":"hello!"}],"usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":200,"cache_creation_input_tokens":50}}}
 {"type":"assistant","sessionId":"sess-1","timestamp":"2026-05-21T10:00:20Z","message":{"model":"claude-sonnet-4-7","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.ts","old_string":"foo\n","new_string":"bar\nbaz\n"}}],"usage":{"input_tokens":120,"output_tokens":35,"cache_read_input_tokens":250,"cache_creation_input_tokens":60}}}

@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "claude-code-parser-0.7.0"
+const ParserVersionConst = "claude-code-parser-0.7.1"
 
 // Tool category buckets. Anything not matching defaults to "other".
 var toolCategory = map[string]string{
@@ -61,6 +61,11 @@ type rawEvent struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
 	Timestamp time.Time `json:"timestamp"`
+	// Cwd and GitBranch are set by Claude Code on non-trivial events and
+	// provide authoritative workspace path and branch name without any
+	// lossy decode from the project directory name encoding.
+	Cwd       string `json:"cwd,omitempty"`
+	GitBranch string `json:"gitBranch,omitempty"`
 	Message   struct {
 		Model   string `json:"model,omitempty"`
 		Content []struct {
@@ -313,8 +318,13 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		cacheReadTokens     int64
 		cacheCreationTokens int64
 		// projectDir is the encoded project directory name (direct child of rootDir).
-		// Used to decode the workspace path for git hints.
+		// Used to decode the workspace path for git hints (fallback only).
 		projectDir string
+		// cwd and gitBranch are captured from JSONL event fields. They are
+		// authoritative and preferred over the decoded projectDir path.
+		// Last-seen non-empty value wins (Claude Code can change cwd mid-session).
+		cwd       string
+		gitBranch string
 	}
 	bySession := map[string]*sessionBucket{}
 
@@ -379,6 +389,14 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 				b.endedAt = ev.Timestamp
 			}
 
+			// Update cwd and gitBranch: last-seen non-empty value wins.
+			if ev.Cwd != "" {
+				b.cwd = ev.Cwd
+			}
+			if ev.GitBranch != "" {
+				b.gitBranch = ev.GitBranch
+			}
+
 			switch ev.Type {
 			case "assistant":
 				if ev.Message.Model != "" {
@@ -437,12 +455,25 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		}
 
 		// Git hints (opt-in via EnableGitHints).
-		if p.enableGitHints && b.projectDir != "" {
-			workspacePath := decodeProjectDir(b.projectDir)
-			h := githints.Extract(workspacePath, b.startedAt, b.endedAt)
-			s.RepoRemoteHash = h.RepoRemoteHash
-			s.BranchName = h.BranchName
-			s.CommitSHAs = h.CommitSHAs
+		if p.enableGitHints {
+			// Prefer the authoritative cwd from JSONL events; fall back to
+			// the lossy decoded project directory name for older JSONL files.
+			workspacePath := b.cwd
+			if workspacePath == "" && b.projectDir != "" {
+				workspacePath = decodeProjectDir(b.projectDir)
+			}
+			if workspacePath != "" {
+				h := githints.Extract(workspacePath, b.startedAt, b.endedAt)
+				s.RepoRemoteHash = h.RepoRemoteHash
+				// Prefer gitBranch from JSONL events over the shell-out result,
+				// but only when the JSONL value is non-empty.
+				if b.gitBranch != "" {
+					s.BranchName = b.gitBranch
+				} else {
+					s.BranchName = h.BranchName
+				}
+				s.CommitSHAs = h.CommitSHAs
+			}
 		}
 
 		out = append(out, s)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,10 +158,10 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.7.0.
+// TestParserVersionBump verifies the version constant reflects v0.7.1.
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "claude-code-parser-0.7.0" {
-		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.7.0", ParserVersionConst)
+	if ParserVersionConst != "claude-code-parser-0.7.1" {
+		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.7.1", ParserVersionConst)
 	}
 }
 
@@ -283,5 +284,133 @@ func TestAggregateSessionsGitHintsEnabled(t *testing.T) {
 	// No remote configured → hash empty
 	if s.RepoRemoteHash != "" {
 		t.Errorf("RepoRemoteHash = %q, want empty (no remote)", s.RepoRemoteHash)
+	}
+}
+
+// TestAggregateSessionsGitBranchFromJSONL verifies that when enableGitHints is
+// true and the JSONL event carries a gitBranch field, BranchName is taken from
+// the event rather than from git shell-out. The cwd in the fixture points to a
+// path that does not exist on disk (/Users/test-user/my-project), so git will
+// fail silently — but BranchName must still be set from the JSONL value.
+// This also validates that paths containing hyphens (which would decode wrong)
+// are handled correctly via the cwd field.
+func TestAggregateSessionsGitBranchFromJSONL(t *testing.T) {
+	abs, _ := filepath.Abs("../../../testdata/claude_code")
+	p := NewParserWithOptions(abs, true)
+
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	// gitBranch from the JSONL attachment event must be used, overriding any
+	// failed git shell-out (the cwd /Users/test-user/my-project does not exist).
+	if s.BranchName != "feature/my-hyphenated-branch" {
+		t.Errorf("BranchName = %q, want feature/my-hyphenated-branch (from JSONL gitBranch)", s.BranchName)
+	}
+	// cwd does not exist → git fails → no remote hash or commit SHAs
+	if s.RepoRemoteHash != "" {
+		t.Errorf("RepoRemoteHash = %q, want empty (cwd not a git repo)", s.RepoRemoteHash)
+	}
+}
+
+// TestAggregateSessionsCwdPrecedence verifies that when a JSONL event carries a
+// cwd field and the project directory also decodes to a valid path, the cwd from
+// the event is preferred as the workspace path for git hints.
+func TestAggregateSessionsCwdPrecedence(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	testID := fmt.Sprintf("%d", time.Now().UnixNano())
+	rootDir := fmt.Sprintf("/tmp/unitsensetest%s/projects", testID)
+	// This is the workspace that the JSONL cwd will point to.
+	cwdWorkspace := fmt.Sprintf("/tmp/unitsensetest%s/cwd-workspace", testID)
+	// This is a decoy workspace that the decoded projectDir would point to.
+	decoyWorkspace := fmt.Sprintf("/tmp/unitsensetest%s/decoy-workspace", testID)
+	t.Cleanup(func() { os.RemoveAll(fmt.Sprintf("/tmp/unitsensetest%s", testID)) })
+
+	for _, dir := range []string{cwdWorkspace, decoyWorkspace, rootDir} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gitEnv := append(os.Environ(),
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git -C %s %v: %v\n%s", dir, args, err, out)
+		}
+	}
+
+	// Init cwdWorkspace on branch "cwd-branch".
+	runGit(".", "init", cwdWorkspace)
+	runGit(cwdWorkspace, "checkout", "-b", "cwd-branch")
+	os.WriteFile(filepath.Join(cwdWorkspace, "f.txt"), []byte("x"), 0644)
+	runGit(cwdWorkspace, "add", "f.txt")
+	commitTime := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339)
+	cmd := exec.Command("git", "-C", cwdWorkspace, "commit", "-m", "test")
+	cmd.Env = append(gitEnv, "GIT_AUTHOR_DATE="+commitTime, "GIT_COMMITTER_DATE="+commitTime)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit in cwd-workspace: %v\n%s", err, out)
+	}
+
+	// Init decoyWorkspace on branch "decoy-branch".
+	runGit(".", "init", decoyWorkspace)
+	runGit(decoyWorkspace, "checkout", "-b", "decoy-branch")
+	os.WriteFile(filepath.Join(decoyWorkspace, "g.txt"), []byte("y"), 0644)
+	runGit(decoyWorkspace, "add", "g.txt")
+	cmd = exec.Command("git", "-C", decoyWorkspace, "commit", "-m", "decoy")
+	cmd.Env = append(gitEnv, "GIT_AUTHOR_DATE="+commitTime, "GIT_COMMITTER_DATE="+commitTime)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit in decoy-workspace: %v\n%s", err, out)
+	}
+
+	// Encode the decoy workspace path as the project directory name so that
+	// the old decode logic would point to decoyWorkspace.
+	encodedDirName := strings.ReplaceAll(decoyWorkspace, "/", "-")
+	projDir := filepath.Join(rootDir, encodedDirName)
+	if err := os.MkdirAll(projDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionTime := time.Now().UTC().Add(-1 * time.Hour)
+	// The event carries cwd pointing to cwdWorkspace, which should win.
+	sessionJSON := `{"type":"attachment","sessionId":"cwd-test-sess","timestamp":"` +
+		sessionTime.Format(time.RFC3339) + `","cwd":"` + cwdWorkspace + `","gitBranch":"cwd-branch"}` + "\n" +
+		`{"type":"assistant","sessionId":"cwd-test-sess","timestamp":"` +
+		sessionTime.Add(time.Second).Format(time.RFC3339) + `","message":{"model":"claude-test","content":[],"usage":{"input_tokens":5,"output_tokens":2}}}`
+	jsonlPath := filepath.Join(projDir, "session.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(sessionJSON+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParserWithOptions(rootDir, true)
+	from := sessionTime.Add(-1 * time.Hour)
+	to := sessionTime.Add(2 * time.Hour)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	s := sessions[0]
+	// cwd from JSONL points to cwdWorkspace which is on "cwd-branch", not "decoy-branch".
+	if s.BranchName != "cwd-branch" {
+		t.Errorf("BranchName = %q, want cwd-branch (from JSONL cwd, not decoded projectDir)", s.BranchName)
 	}
 }
