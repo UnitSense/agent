@@ -61,4 +61,22 @@ func TestParseFixture(t *testing.T) {
 	if a.ToolCallsByName["apply_patch"] != 1 {
 		t.Errorf("ToolCallsByName[apply_patch] = %d, want 1", a.ToolCallsByName["apply_patch"])
 	}
+	// Two token_count events with non-null info:
+	//   t1: input=500 cached_input=1000 output=150 reasoning=50
+	//   t2: input=300 cached_input=600  output=80  reasoning=20
+	// Sums: input=800, cache_read=1600, output=150+50+80+20=300
+	// One token_count event had info=null and must be ignored.
+	if a.InputTokens == nil || *a.InputTokens != 800 {
+		t.Errorf("InputTokens = %v, want 800", a.InputTokens)
+	}
+	if a.OutputTokens == nil || *a.OutputTokens != 300 {
+		t.Errorf("OutputTokens = %v, want 300 (output + reasoning)", a.OutputTokens)
+	}
+	if a.CacheReadTokens == nil || *a.CacheReadTokens != 1600 {
+		t.Errorf("CacheReadTokens = %v, want 1600", a.CacheReadTokens)
+	}
+	// Codex does not emit cache_creation tokens.
+	if a.CacheCreationTokens != nil {
+		t.Errorf("CacheCreationTokens = %v, want nil (Codex doesn't emit)", a.CacheCreationTokens)
+	}
 }

@@ -61,6 +61,21 @@ func TestParseFixture(t *testing.T) {
 	if a.ToolCallsByName["Bash"] != 2 {
 		t.Errorf("ToolCallsByName[Bash] = %d, want 2", a.ToolCallsByName["Bash"])
 	}
+	// Token sums across the four assistant messages: input=100+120+80+90=390,
+	// output=40+35+20+25=120, cache_read=200+250+150+180=780,
+	// cache_creation=50+60+40+45=195.
+	if a.InputTokens == nil || *a.InputTokens != 390 {
+		t.Errorf("InputTokens = %v, want 390", a.InputTokens)
+	}
+	if a.OutputTokens == nil || *a.OutputTokens != 120 {
+		t.Errorf("OutputTokens = %v, want 120", a.OutputTokens)
+	}
+	if a.CacheReadTokens == nil || *a.CacheReadTokens != 780 {
+		t.Errorf("CacheReadTokens = %v, want 780", a.CacheReadTokens)
+	}
+	if a.CacheCreationTokens == nil || *a.CacheCreationTokens != 195 {
+		t.Errorf("CacheCreationTokens = %v, want 195", a.CacheCreationTokens)
+	}
 }
 
 func TestParseEmptyDir(t *testing.T) {

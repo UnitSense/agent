@@ -23,6 +23,13 @@ type DayAggregate struct {
 	EstimatedCostUSD          *float64
 	CostSource                string
 	MetricProvenance          map[string]string
+	// Real-token sums when the upstream JSONL carries usage telemetry.
+	// nil when the parser couldn't extract them (older sessions, Codex
+	// events without an info block, etc).
+	InputTokens         *int64
+	OutputTokens        *int64
+	CacheReadTokens     *int64
+	CacheCreationTokens *int64
 }
 
 type Parser interface {

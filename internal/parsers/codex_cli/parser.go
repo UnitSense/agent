@@ -13,7 +13,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.3.0"
+const ParserVersionConst = "codex-cli-parser-0.4.0"
 
 var (
 	commitRegex  = regexp.MustCompile(`\bgit\s+commit\b`)
@@ -54,6 +54,16 @@ type eventMsgPayload struct {
 	Command  []string `json:"command,omitempty"`
 	ExitCode *int     `json:"exit_code,omitempty"`
 	Success  *bool    `json:"success,omitempty"`
+	// token_count payloads carry an info block with per-turn usage.
+	// info is null on rate-limit-only emissions, so it's optional.
+	Info *struct {
+		LastTokenUsage *struct {
+			InputTokens           int64 `json:"input_tokens"`
+			CachedInputTokens     int64 `json:"cached_input_tokens"`
+			OutputTokens          int64 `json:"output_tokens"`
+			ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+		} `json:"last_token_usage,omitempty"`
+	} `json:"info,omitempty"`
 }
 
 type responseItemPayload struct {
@@ -86,6 +96,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		pullRequests              int
 		models                    map[string]int
 		toolsByName               map[string]int // NEW
+		inputTokens               int64
+		outputTokens              int64
+		cacheReadTokens           int64
 	}
 
 	newBucket := func() *bucket {
@@ -198,6 +211,15 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 					continue
 				}
 				switch em.Type {
+				case "token_count":
+					if em.Info != nil && em.Info.LastTokenUsage != nil {
+						u := em.Info.LastTokenUsage
+						b.inputTokens += u.InputTokens
+						b.cacheReadTokens += u.CachedInputTokens
+						// Reasoning tokens are billed as output; fold them in.
+						b.outputTokens += u.OutputTokens + u.ReasoningOutputTokens
+					}
+
 				case "exec_command_end":
 					exitOK := em.ExitCode != nil && *em.ExitCode == 0
 					joined := strings.Join(em.Command, " ")
@@ -274,6 +296,20 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		if len(b.toolsByName) > 0 {
 			agg.ToolCallsByName = b.toolsByName
 		}
+		if b.inputTokens > 0 {
+			v := b.inputTokens
+			agg.InputTokens = &v
+		}
+		if b.outputTokens > 0 {
+			v := b.outputTokens
+			agg.OutputTokens = &v
+		}
+		if b.cacheReadTokens > 0 {
+			v := b.cacheReadTokens
+			agg.CacheReadTokens = &v
+		}
+		// Codex CLI does not emit cache_creation tokens (only cached_input_tokens
+		// which we map to CacheReadTokens). CacheCreationTokens stays nil.
 		out = append(out, agg)
 	}
 	return out, nil

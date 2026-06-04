@@ -13,7 +13,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 )
 
-const ParserVersionConst = "claude-code-parser-0.4.0"
+const ParserVersionConst = "claude-code-parser-0.5.0"
 
 type Parser struct {
 	rootDir string
@@ -43,6 +43,12 @@ type rawEvent struct {
 			} `json:"input,omitempty"`
 			IsError bool `json:"is_error,omitempty"`
 		} `json:"content,omitempty"`
+		Usage struct {
+			InputTokens              int64 `json:"input_tokens,omitempty"`
+			OutputTokens             int64 `json:"output_tokens,omitempty"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+		} `json:"usage,omitempty"`
 	} `json:"message,omitempty"`
 }
 
@@ -71,6 +77,10 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		commits, pullRequests     int
 		models                    map[string]int
 		toolsByName               map[string]int // NEW
+		inputTokens               int64
+		outputTokens              int64
+		cacheReadTokens           int64
+		cacheCreationTokens       int64
 	}
 	byDate := map[string]*dayBucket{}
 	sessionDates := map[string]map[string]struct{ minTS, maxTS time.Time }{}
@@ -130,6 +140,10 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 				if ev.Message.Model != "" {
 					b.models[sanitizeModelKey(ev.Message.Model)]++
 				}
+				b.inputTokens += ev.Message.Usage.InputTokens
+				b.outputTokens += ev.Message.Usage.OutputTokens
+				b.cacheReadTokens += ev.Message.Usage.CacheReadInputTokens
+				b.cacheCreationTokens += ev.Message.Usage.CacheCreationInputTokens
 				for _, c := range ev.Message.Content {
 					if c.Type == "tool_use" {
 						b.toolInvocations++
@@ -213,6 +227,22 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		}
 		if len(b.toolsByName) > 0 {
 			agg.ToolCallsByName = b.toolsByName
+		}
+		if b.inputTokens > 0 {
+			v := b.inputTokens
+			agg.InputTokens = &v
+		}
+		if b.outputTokens > 0 {
+			v := b.outputTokens
+			agg.OutputTokens = &v
+		}
+		if b.cacheReadTokens > 0 {
+			v := b.cacheReadTokens
+			agg.CacheReadTokens = &v
+		}
+		if b.cacheCreationTokens > 0 {
+			v := b.cacheCreationTokens
+			agg.CacheCreationTokens = &v
 		}
 		out = append(out, agg)
 	}

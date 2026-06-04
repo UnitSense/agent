@@ -169,6 +169,18 @@ func aggregatesToEvents(aggs []parsers.DayAggregate) []map[string]any {
 		if len(a.ToolCallsByName) > 0 {
 			ev["tool_calls_by_name"] = a.ToolCallsByName
 		}
+		if a.InputTokens != nil {
+			ev["input_tokens"] = *a.InputTokens
+		}
+		if a.OutputTokens != nil {
+			ev["output_tokens"] = *a.OutputTokens
+		}
+		if a.CacheReadTokens != nil {
+			ev["cache_read_tokens"] = *a.CacheReadTokens
+		}
+		if a.CacheCreationTokens != nil {
+			ev["cache_creation_tokens"] = *a.CacheCreationTokens
+		}
 		if a.EstimatedCostUSD != nil {
 			ev["estimated_cost_usd"] = *a.EstimatedCostUSD
 		}
