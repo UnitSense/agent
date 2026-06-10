@@ -15,10 +15,13 @@ func Install(binPath string, interval time.Duration) error {
 	if minutes < 1 {
 		minutes = 1
 	}
+	// Wrap in a hidden PowerShell window so Task Scheduler doesn't flash
+	// a terminal every time the agent runs.
+	tr := fmt.Sprintf(`powershell.exe -WindowStyle Hidden -NonInteractive -Command "& '%s' run"`, binPath)
 	cmd := exec.Command("schtasks",
 		"/Create",
 		"/TN", taskName,
-		"/TR", fmt.Sprintf(`"%s" run`, binPath),
+		"/TR", tr,
 		"/SC", "MINUTE",
 		"/MO", fmt.Sprintf("%d", minutes),
 		"/F",
