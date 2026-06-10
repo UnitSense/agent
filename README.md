@@ -19,18 +19,23 @@ unitsense-agent setup
 unitsense-agent install --schedule=10m
 ```
 
-### Windows (PowerShell)
+### Windows (Scoop)
 
 ```powershell
+# Add the UnitSense bucket (one-time)
+scoop bucket add unitsense https://github.com/UnitSense/scoop-bucket
+
 # Install
-irm https://app.unitsense.ai/install-agent.ps1 | iex
+scoop install unitsense-agent
 
 # Configure
-unitsense-agent.exe setup
+unitsense-agent setup
 
 # Schedule to run every 10 minutes via Task Scheduler
-unitsense-agent.exe install --schedule=10m
+unitsense-agent install --schedule=10m
 ```
+
+> Don't have Scoop? Install it first: https://scoop.sh
 
 ## What gets sent
 
