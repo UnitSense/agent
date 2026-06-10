@@ -483,13 +483,15 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 
 func intPtr(i int) *int { return &i }
 
-// truncateKey caps a map key at 64 characters to satisfy the server's
+// truncateKey caps a map key at 64 Unicode code points to satisfy the server's
 // validation limit. MCP tool names can exceed this (they embed a UUID).
+// Uses rune-aware slicing to avoid producing invalid UTF-8.
 func truncateKey(s string) string {
-	if len(s) <= 64 {
+	runes := []rune(s)
+	if len(runes) <= 64 {
 		return s
 	}
-	return s[:64]
+	return string(runes[:64])
 }
 
 func countLines(s string) int {

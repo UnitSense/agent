@@ -11,6 +11,7 @@ import (
 
 func TestInstallCreatesTask(t *testing.T) {
 	bin := `C:\Windows\System32\cmd.exe`
+	t.Cleanup(func() { _ = Uninstall() })
 	if err := Install(bin, 10*time.Minute); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -21,8 +22,6 @@ func TestInstallCreatesTask(t *testing.T) {
 	if !strings.Contains(string(out), "cmd.exe") {
 		t.Fatalf("task command not found in output: %s", out)
 	}
-	// Cleanup
-	_ = Uninstall()
 }
 
 func TestUninstallRemovesTask(t *testing.T) {
