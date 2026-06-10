@@ -192,7 +192,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 				for _, c := range ev.Message.Content {
 					if c.Type == "tool_use" {
 						b.toolInvocations++
-						toolName := c.Name
+						toolName := truncateKey(c.Name)
 						if toolName != "" {
 							b.toolsByName[toolName]++
 						}
@@ -482,6 +482,15 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 }
 
 func intPtr(i int) *int { return &i }
+
+// truncateKey caps a map key at 64 characters to satisfy the server's
+// validation limit. MCP tool names can exceed this (they embed a UUID).
+func truncateKey(s string) string {
+	if len(s) <= 64 {
+		return s
+	}
+	return s[:64]
+}
 
 func countLines(s string) int {
 	if s == "" {
