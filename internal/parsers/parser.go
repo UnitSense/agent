@@ -86,10 +86,14 @@ type RateLimitWindow struct {
 // this in from a statusline hook or estimate from tokens (see the spec).
 type RateLimitSnapshot struct {
 	Source     string           // parser Provider(), e.g. "agent_codex_cli"
-	PlanType   string           // provider plan tier, e.g. "plus", "pro"
+	PlanType   string           // provider plan tier, e.g. "plus", "pro", "claude_max_5x"
 	CapturedAt time.Time        // timestamp of the emission this came from
 	Primary    *RateLimitWindow // rolling window (nil if absent)
 	Secondary  *RateLimitWindow // weekly window (nil if absent)
+	// Estimated is false for provider-reported data (Codex rollout files) and
+	// true when used-% is inferred from token usage vs a configured plan budget
+	// (Claude today). The dashboard badges estimated values accordingly.
+	Estimated bool
 }
 
 // RateLimitReader is an OPTIONAL capability. Parsers whose source files persist

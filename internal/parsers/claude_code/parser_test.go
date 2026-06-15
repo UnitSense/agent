@@ -158,10 +158,11 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.7.1.
+// TestParserVersionBump verifies the version constant reflects v0.8.0
+// (0.8.0 added estimated rate-limit/quota — see ratelimits.go).
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "claude-code-parser-0.7.1" {
-		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.7.1", ParserVersionConst)
+	if ParserVersionConst != "claude-code-parser-0.8.0" {
+		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.8.0", ParserVersionConst)
 	}
 }
 
