@@ -133,6 +133,9 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if setupEnableGitHints {
 		fmt.Println("Git hints enabled: branch name, commit SHAs, and hashed remote URL will be included in session payloads.")
 	}
+	if note := ensureClaudeStatusline(); note != "" {
+		fmt.Println("\n" + note)
+	}
 	fmt.Println("\nNext: schedule periodic sync — `unitsense-agent install --schedule=10m`")
 	return nil
 }

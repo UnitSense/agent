@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/UnitSense/agent/internal/parsers/claude_code"
@@ -62,6 +63,54 @@ Wire it up in ~/.claude/settings.json:
 }
 
 func init() { RegisterCommand(statuslineCmd) }
+
+// ensureClaudeStatusline wires this binary as Claude Code's statusLine command
+// so live subscription quota gets captured. Non-destructive: it never clobbers
+// an existing statusLine (just tells the user how to add capture). Returns a
+// human-readable note for setup to print, or "" if nothing to say.
+func ensureClaudeStatusline() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, ".claude")
+	path := filepath.Join(dir, "settings.json")
+
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "unitsense-agent"
+	}
+	cmdStr := self + " statusline"
+
+	settings := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if json.Unmarshal(data, &settings) != nil {
+			return fmt.Sprintf("Couldn't parse %s — to capture quota, add a statusLine: %q", path, cmdStr)
+		}
+	}
+	if existing, ok := settings["statusLine"]; ok {
+		if m, ok := existing.(map[string]any); ok {
+			if c, _ := m["command"].(string); c == cmdStr || strings.Contains(c, "unitsense-agent statusline") {
+				return "Claude Code statusLine already wired for quota capture."
+			}
+		}
+		return fmt.Sprintf("You already have a Claude Code statusLine — to capture subscription quota, "+
+			"call %q from it (it prints a status line on stdout).", cmdStr)
+	}
+
+	settings["statusLine"] = map[string]any{"type": "command", "command": cmdStr}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return ""
+	}
+	if os.WriteFile(path, append(data, '\n'), 0o644) != nil {
+		return fmt.Sprintf("Couldn't write %s — to capture quota, add a statusLine: %q", path, cmdStr)
+	}
+	return "Wired Claude Code statusLine → live subscription quota (5h + weekly) will be captured."
+}
 
 // captureQuota persists the live rate-limit windows to the file the Claude
 // parser reads. Best-effort and atomic; skips writing when no windows are
