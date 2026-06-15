@@ -37,8 +37,8 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm()&0077 != 0 {
-		return nil, fmt.Errorf("config file %s has loose permissions %o; expected 0600", path, info.Mode().Perm())
+	if err := checkPermissions(info, path); err != nil {
+		return nil, err
 	}
 	var c Config
 	if _, err := toml.DecodeFile(path, &c); err != nil {

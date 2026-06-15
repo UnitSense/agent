@@ -33,6 +33,20 @@ archives:
 checksum:
   name_template: 'checksums.txt'
 
+scoops:
+  - repository:
+      owner: UnitSense
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_GITHUB_TOKEN }}"
+    name: unitsense-agent
+    description: "UnitSense Agent — tracks AI coding tool usage and syncs metrics to UnitSense"
+    homepage: "https://unitsense.ai"
+    license: MIT
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "Scoop update for unitsense-agent version {{ .Tag }}"
+
 signs:
   - id: cosign-keyless
     cmd: cosign

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/google/uuid"
@@ -39,6 +40,9 @@ func TestLoadAndSave(t *testing.T) {
 }
 
 func TestRejectsLoosePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permission semantics not available on Windows")
+	}
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "agent.toml")
 	cfg := &Config{ServerURL: "https://app.unitsense.ai", DeviceToken: "ust_dev_test"}
@@ -53,6 +57,9 @@ func TestRejectsLoosePermissions(t *testing.T) {
 }
 
 func TestSaveCreatesParentDirsWith0700(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix directory permission check not applicable on Windows")
+	}
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "nested", "agent.toml")
 	cfg := &Config{ServerURL: "https://app.unitsense.ai", DeviceToken: "ust_dev_test"}

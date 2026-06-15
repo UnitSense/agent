@@ -226,7 +226,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 					if ri.Type == "function_call" || ri.Type == "custom_tool_call" {
 						b.toolInvocations++
 						if ri.Name != "" {
-							b.toolsByName[ri.Name]++
+							b.toolsByName[truncateKey(ri.Name)]++
 						}
 					}
 				}
@@ -507,4 +507,15 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// truncateKey caps a map key at 64 Unicode code points to satisfy the server's
+// validation limit. MCP tool names can exceed this (they embed a UUID).
+// Uses rune-aware slicing to avoid producing invalid UTF-8.
+func truncateKey(s string) string {
+	runes := []rune(s)
+	if len(runes) <= 64 {
+		return s
+	}
+	return string(runes[:64])
 }
