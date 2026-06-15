@@ -18,10 +18,11 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.6.0.
+// TestParserVersionBump verifies the version constant reflects v0.7.0
+// (0.7.0 added rate_limits capture — see ratelimits.go).
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "codex-cli-parser-0.6.0" {
-		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.6.0", ParserVersionConst)
+	if ParserVersionConst != "codex-cli-parser-0.7.0" {
+		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.7.0", ParserVersionConst)
 	}
 }
 

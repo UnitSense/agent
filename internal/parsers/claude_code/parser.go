@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "claude-code-parser-0.7.1"
+const ParserVersionConst = "claude-code-parser-0.8.0" // 0.8.0: estimated rate-limit/quota (ratelimits.go)
 
 // Tool category buckets. Anything not matching defaults to "other".
 var toolCategory = map[string]string{

@@ -81,6 +81,23 @@ type SessionsResponse struct {
 	Duplicate     bool   `json:"duplicate"`
 }
 
+// RateLimitsRequest posts the latest subscription-quota snapshot(s) for a
+// provider. Snapshots are point-in-time gauges; the server upserts the latest
+// per developer+provider. Developer attribution is resolved server-side from
+// the device token (same as events/sessions).
+type RateLimitsRequest struct {
+	RequestID     uuid.UUID        `json:"request_id"`
+	AgentVersion  string           `json:"agent_version"`
+	ParserVersion string           `json:"parser_version"`
+	Provider      string           `json:"provider"`
+	Snapshots     []map[string]any `json:"snapshots"`
+}
+
+type RateLimitsResponse struct {
+	AcceptedCount int    `json:"accepted_count"`
+	RunID         string `json:"run_id"`
+}
+
 func (c *Client) Validate() (*ValidateResponse, error) {
 	var resp ValidateResponse
 	if err := c.do("POST", "/api/v1/agent/validate", nil, &resp); err != nil {
@@ -108,6 +125,14 @@ func (c *Client) PostEvents(req EventsRequest) (*EventsResponse, error) {
 func (c *Client) PostSessions(req SessionsRequest) (*SessionsResponse, error) {
 	var resp SessionsResponse
 	if err := c.do("POST", "/api/v1/agent/sessions", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) PostRateLimits(req RateLimitsRequest) (*RateLimitsResponse, error) {
+	var resp RateLimitsResponse
+	if err := c.do("POST", "/api/v1/agent/rate-limits", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

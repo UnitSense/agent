@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.6.0"
+const ParserVersionConst = "codex-cli-parser-0.7.0" // 0.7.0: capture rate_limits (subscription quota)
 
 // Codex tool-name categorization. Codex CLI emits a small set of canonical
 // names so the mapping is short.
@@ -90,6 +90,10 @@ type eventMsgPayload struct {
 			ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
 		} `json:"last_token_usage,omitempty"`
 	} `json:"info,omitempty"`
+	// rate_limits is the provider-reported subscription quota, present on
+	// token_count emissions (incl. the rate-limit-only ones where info is null).
+	// Captured by LatestRateLimit (see ratelimits.go).
+	RateLimits *rateLimitsRaw `json:"rate_limits,omitempty"`
 }
 
 type responseItemPayload struct {

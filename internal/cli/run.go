@@ -159,6 +159,35 @@ func runRun(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		fmt.Printf("%s: %d sessions accepted (run=%s)\n", p.Provider(), sessResp.AcceptedCount, sessResp.RunID)
+
+		// Subscription quota snapshot (optional capability). Only parsers whose
+		// source files carry it (Codex) or can estimate it (Claude) implement
+		// RateLimitReader; the rest are skipped.
+		if rl, ok := p.(parsers.RateLimitReader); ok {
+			snap, rErr := rl.LatestRateLimit(tw)
+			if rErr != nil {
+				fmt.Fprintf(os.Stderr, "parser %s rate-limit error: %v\n", p.Tool(), rErr)
+			} else if snap != nil {
+				rlReq := client.RateLimitsRequest{
+					RequestID:     uuid.New(),
+					AgentVersion:  Version,
+					ParserVersion: p.ParserVersion(),
+					Provider:      p.Provider(),
+					Snapshots:     []map[string]any{rateLimitToPayload(snap, cfg.MachineID.String())},
+				}
+				if runDry {
+					fmt.Printf("--- DRY: %s rate-limits ---\n", p.Provider())
+					fmt.Printf("request_id=%s plan=%s estimated=%t\n", rlReq.RequestID, snap.PlanType, snap.Estimated)
+				} else if rlResp, err := cl.PostRateLimits(rlReq); err != nil {
+					fmt.Fprintf(os.Stderr, "post rate-limits (%s): %v\n", p.Provider(), err)
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					fmt.Printf("%s: %d rate-limit snapshot accepted (run=%s)\n", p.Provider(), rlResp.AcceptedCount, rlResp.RunID)
+				}
+			}
+		}
 	}
 
 	duration := time.Since(start)
@@ -229,6 +258,33 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 		out = append(out, ev)
 	}
 	return out
+}
+
+// rateLimitToPayload converts a RateLimitSnapshot into a JSON-ready map for the
+// /api/v1/agent/rate-limits endpoint. Developer attribution is resolved
+// server-side from the device token; we send machine_id for provenance only.
+func rateLimitToPayload(s *parsers.RateLimitSnapshot, machineID string) map[string]any {
+	win := func(w *parsers.RateLimitWindow) map[string]any {
+		if w == nil {
+			return nil
+		}
+		m := map[string]any{
+			"used_percent":   w.UsedPercent,
+			"window_minutes": w.WindowMinutes,
+		}
+		if !w.ResetsAt.IsZero() {
+			m["resets_at"] = w.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		return m
+	}
+	return map[string]any{
+		"machine_id":  machineID,
+		"plan_type":   s.PlanType,
+		"captured_at": s.CapturedAt.UTC().Format(time.RFC3339),
+		"estimated":   s.Estimated,
+		"primary":     win(s.Primary),
+		"secondary":   win(s.Secondary),
+	}
 }
 
 func aggregatesToEvents(aggs []parsers.DayAggregate) []map[string]any {
