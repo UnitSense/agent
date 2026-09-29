@@ -60,11 +60,12 @@ type EventsRequest struct {
 }
 
 type EventsResponse struct {
-	AcceptedCount        int    `json:"accepted_count"`
-	RunID                string `json:"run_id"`
-	DeveloperID          string `json:"developer_id"`
-	ProviderConnectionID string `json:"provider_connection_id"`
-	Duplicate            bool   `json:"duplicate"`
+	AcceptedCount                  int    `json:"accepted_count"`
+	RunID                          string `json:"run_id"`
+	DeveloperID                    string `json:"developer_id"`
+	ProviderConnectionID           string `json:"provider_connection_id"`
+	Duplicate                      bool   `json:"duplicate"`
+	RecommendedSyncIntervalMinutes int    `json:"recommended_sync_interval_minutes,omitempty"`
 }
 
 type SessionsRequest struct {
@@ -96,6 +97,28 @@ type RateLimitsRequest struct {
 type RateLimitsResponse struct {
 	AcceptedCount int    `json:"accepted_count"`
 	RunID         string `json:"run_id"`
+}
+
+// CheckInRequest/Response support the auto-sync toggle: a lightweight call
+// made before any parsing or posting, so the server can tell the agent
+// whether this run should actually sync (always, in auto mode; only when a
+// manual "Sync now" request is pending, in manual mode) and what interval
+// to run on next.
+type CheckInRequest struct {
+	AgentVersion string `json:"agent_version"`
+}
+
+type CheckInResponse struct {
+	ShouldSync                     bool `json:"should_sync"`
+	RecommendedSyncIntervalMinutes int  `json:"recommended_sync_interval_minutes"`
+}
+
+func (c *Client) CheckIn(req CheckInRequest) (*CheckInResponse, error) {
+	var resp CheckInResponse
+	if err := c.do("POST", "/api/v1/agent/check-in", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) Validate() (*ValidateResponse, error) {

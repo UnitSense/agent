@@ -15,6 +15,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 	"github.com/UnitSense/agent/internal/parsers/claude_code"
 	"github.com/UnitSense/agent/internal/parsers/codex_cli"
+	"github.com/UnitSense/agent/internal/schedule"
 	"github.com/UnitSense/agent/internal/state"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -55,12 +56,26 @@ func runRun(cmd *cobra.Command, args []string) error {
 		time.Sleep(j)
 	}
 
+	statePath := filepath.Join(filepath.Dir(cfgPath), "state.json")
+	st, _ := state.Load(statePath)
+
 	window, err := time.ParseDuration(runWindow)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
-	tw := parsers.TimeWindow{From: now.Add(-window), To: now.Add(time.Hour)}
+	from := now.Add(-window)
+	// Never leave a gap: if the previous run succeeded, always look back at
+	// least as far as that point, even if it's further than the default
+	// window. Otherwise a session spanning longer than `window` can fall
+	// partly outside this run's aggregation and silently regress stored
+	// totals via the day-row upsert on the dashboard side.
+	if st.LastRunStatus == "succeeded" && st.LastRunAt != "" {
+		if lastRun, perr := time.Parse(time.RFC3339, st.LastRunAt); perr == nil && lastRun.Before(from) {
+			from = lastRun
+		}
+	}
+	tw := parsers.TimeWindow{From: from, To: now.Add(time.Hour)}
 
 	home, _ := os.UserHomeDir()
 	parserList := []parsers.Parser{}
@@ -83,9 +98,32 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	cl := client.New(cfg.ServerURL, cfg.DeviceToken)
-	statePath := filepath.Join(filepath.Dir(cfgPath), "state.json")
-	st, _ := state.Load(statePath)
 	start := time.Now()
+
+	// Check in before doing any real work: in auto-sync mode this just
+	// carries the tenant's configured interval (as before); in manual mode
+	// it tells us whether a "Sync now" request is actually pending, and if
+	// not, this run does nothing further -- the whole point of manual mode
+	// is a real sync only happens when explicitly requested, not on every
+	// scheduled tick.
+	if !runDry {
+		ci, ciErr := cl.CheckIn(client.CheckInRequest{AgentVersion: Version})
+		if ciErr != nil {
+			fmt.Fprintf(os.Stderr, "check-in: %v\n", ciErr)
+		} else {
+			reconcileSchedule(st, ci.RecommendedSyncIntervalMinutes)
+			if !ci.ShouldSync {
+				fmt.Println("auto sync is off — no sync requested, skipping")
+				st.LastRunDurationMS = int(time.Since(start).Milliseconds())
+				st.LastRunStatus = "succeeded"
+				st.LastError = ""
+				st.ConsecutiveFailures = 0
+				_ = state.Save(statePath, st)
+				return nil
+			}
+		}
+	}
+
 	totalSent := 0
 	var firstErr error
 
@@ -191,7 +229,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	duration := time.Since(start)
-	st.LastRunAt = time.Now().UTC().Format(time.RFC3339)
+	if firstErr == nil && !runDry {
+		// Only advance the watermark on a real, fully successful run. A
+		// --dry run never posts anything, so it must not mark the gap as
+		// closed; a partial/total failure must not either, or the next
+		// run's window would start past data that never reached the server.
+		st.LastRunAt = time.Now().UTC().Format(time.RFC3339)
+	}
 	st.LastRunDurationMS = int(duration.Milliseconds())
 	st.LastRunEventsSent = totalSent
 	if firstErr != nil {
@@ -205,6 +249,27 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	_ = state.Save(statePath, st)
 	return firstErr
+}
+
+// reconcileSchedule updates the OS-scheduled task if the server recommends a
+// different interval than what's currently installed. Only ever adjusts a
+// schedule that already exists (ScheduledIntervalMinutes > 0, meaning
+// `install` was run at least once) — never silently creates one from
+// nothing. Mutates st in place on success.
+func reconcileSchedule(st *state.State, recommendedMinutes int) {
+	if recommendedMinutes <= 0 || st.ScheduledIntervalMinutes <= 0 || recommendedMinutes == st.ScheduledIntervalMinutes {
+		return
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if err := schedule.Install(bin, time.Duration(recommendedMinutes)*time.Minute); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to reconcile schedule: %v\n", err)
+		return
+	}
+	fmt.Printf("sync interval updated: %dm -> %dm\n", st.ScheduledIntervalMinutes, recommendedMinutes)
+	st.ScheduledIntervalMinutes = recommendedMinutes
 }
 
 // sessionsToPayload converts SessionSummary structs into JSON-ready maps for
@@ -245,6 +310,9 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 		}
 		if s.CacheCreationTokens != nil {
 			ev["cache_creation_tokens"] = *s.CacheCreationTokens
+		}
+		if s.PromptCount != nil {
+			ev["prompt_count"] = *s.PromptCount
 		}
 		if s.RepoRemoteHash != "" {
 			ev["repo_remote_hash"] = s.RepoRemoteHash
@@ -332,6 +400,9 @@ func aggregatesToEvents(aggs []parsers.DayAggregate) []map[string]any {
 		}
 		if a.CacheCreationTokens != nil {
 			ev["cache_creation_tokens"] = *a.CacheCreationTokens
+		}
+		if a.PromptCount != nil {
+			ev["prompt_count"] = *a.PromptCount
 		}
 		if a.EstimatedCostUSD != nil {
 			ev["estimated_cost_usd"] = *a.EstimatedCostUSD

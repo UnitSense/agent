@@ -57,6 +57,41 @@ func (p *Parser) Provider() string      { return "agent_claude_code" }
 func (p *Parser) Tool() string          { return "claude_code" }
 func (p *Parser) ParserVersion() string { return ParserVersionConst }
 
+type contentBlock struct {
+	Type  string `json:"type"`
+	Name  string `json:"name,omitempty"`
+	Input struct {
+		OldString string `json:"old_string,omitempty"`
+		NewString string `json:"new_string,omitempty"`
+		Command   string `json:"command,omitempty"`
+	} `json:"input,omitempty"`
+	IsError bool `json:"is_error,omitempty"`
+}
+
+// contentBlocks unmarshals Claude Code's message.content field, which is
+// either an array of typed blocks (tool_use, tool_result, ...) or, for a
+// plain text-only turn, a bare JSON string. Without this, a bare-string
+// message fails to unmarshal into a []contentBlock, the surrounding
+// json.Unmarshal call returns an error, and the caller's `continue` on that
+// error silently drops the ENTIRE event -- not just its content. Since most
+// simple human-typed prompts use the bare-string form, that previously
+// dropped the large majority of real prompt turns from every count derived
+// from "user" events (PromptCount, SuccessfulToolInvocations).
+type contentBlocks []contentBlock
+
+func (c *contentBlocks) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		*c = nil
+		return nil
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		return err
+	}
+	*c = blocks
+	return nil
+}
+
 type rawEvent struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId"`
@@ -67,18 +102,9 @@ type rawEvent struct {
 	Cwd       string `json:"cwd,omitempty"`
 	GitBranch string `json:"gitBranch,omitempty"`
 	Message   struct {
-		Model   string `json:"model,omitempty"`
-		Content []struct {
-			Type  string `json:"type"`
-			Name  string `json:"name,omitempty"`
-			Input struct {
-				OldString string `json:"old_string,omitempty"`
-				NewString string `json:"new_string,omitempty"`
-				Command   string `json:"command,omitempty"`
-			} `json:"input,omitempty"`
-			IsError bool `json:"is_error,omitempty"`
-		} `json:"content,omitempty"`
-		Usage struct {
+		Model   string        `json:"model,omitempty"`
+		Content contentBlocks `json:"content,omitempty"`
+		Usage   struct {
 			InputTokens              int64 `json:"input_tokens,omitempty"`
 			OutputTokens             int64 `json:"output_tokens,omitempty"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
@@ -126,6 +152,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		outputTokens              int64
 		cacheReadTokens           int64
 		cacheCreationTokens       int64
+		promptCount               int
 	}
 	byDate := map[string]*dayBucket{}
 	sessionDates := map[string]map[string]struct{ minTS, maxTS time.Time }{}
@@ -215,10 +242,20 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 					}
 				}
 			case "user":
+				isToolResult := false
 				for _, c := range ev.Message.Content {
-					if c.Type == "tool_result" && !c.IsError {
-						b.successfulToolInvocations++
+					if c.Type == "tool_result" {
+						isToolResult = true
+						if !c.IsError {
+							b.successfulToolInvocations++
+						}
 					}
+				}
+				// A "user"-typed event that carries no tool_result content is a
+				// genuine human-authored prompt turn, not a tool-result echo
+				// sent back to the model as a "user" role message.
+				if !isToolResult {
+					b.promptCount++
 				}
 			}
 		}
@@ -289,6 +326,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			v := b.cacheCreationTokens
 			agg.CacheCreationTokens = &v
 		}
+		if b.promptCount > 0 {
+			agg.PromptCount = intPtr(b.promptCount)
+		}
 		out = append(out, agg)
 	}
 	return out, nil
@@ -317,6 +357,7 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		outputTokens        int64
 		cacheReadTokens     int64
 		cacheCreationTokens int64
+		promptCount         int
 		// projectDir is the encoded project directory name (direct child of rootDir).
 		// Used to decode the workspace path for git hints (fallback only).
 		projectDir string
@@ -412,10 +453,17 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 					}
 				}
 			case "user":
+				isToolResult := false
 				for _, c := range ev.Message.Content {
-					if c.Type == "tool_result" && !c.IsError {
-						b.successfulTools++
+					if c.Type == "tool_result" {
+						isToolResult = true
+						if !c.IsError {
+							b.successfulTools++
+						}
 					}
+				}
+				if !isToolResult {
+					b.promptCount++
 				}
 			}
 		}
@@ -452,6 +500,9 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		if b.cacheCreationTokens > 0 {
 			v := b.cacheCreationTokens
 			s.CacheCreationTokens = &v
+		}
+		if b.promptCount > 0 {
+			s.PromptCount = intPtr(b.promptCount)
 		}
 
 		// Git hints (opt-in via EnableGitHints).

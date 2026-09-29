@@ -2,9 +2,12 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/UnitSense/agent/internal/config"
 	"github.com/UnitSense/agent/internal/schedule"
+	"github.com/UnitSense/agent/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +25,18 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return schedule.Install(bin, interval)
+		if err := schedule.Install(bin, interval); err != nil {
+			return err
+		}
+
+		cfgPath, err := config.DefaultPath()
+		if err != nil {
+			return err
+		}
+		statePath := filepath.Join(filepath.Dir(cfgPath), "state.json")
+		st, _ := state.Load(statePath)
+		st.ScheduledIntervalMinutes = int(interval.Minutes())
+		return state.Save(statePath, st)
 	},
 }
 

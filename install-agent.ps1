@@ -1,4 +1,4 @@
-# UnitSense Agent — Windows installer
+# UnitSense Agent - Windows installer
 # Usage: irm https://app.unitsense.ai/install-agent.ps1 | iex
 # Or:    .\install-agent.ps1
 
@@ -14,12 +14,17 @@ Write-Host "Installing UnitSense Agent..."
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -TimeoutSec 30
 $tag = $release.tag_name
 if ($tag -notmatch '^v[\d.]+$') {
-    throw "Unexpected release tag format: '$tag' — aborting"
+    throw "Unexpected release tag format: '$tag' - aborting"
 }
 Write-Host "Latest version: $tag"
 
-# Build download URLs
-$zipName     = "unitsense-agent_${tag}_windows_amd64.zip"
+# Build download URLs. goreleaser's {{ .Version }} template (used in the
+# archive name_template) strips the leading "v" from the tag, so the actual
+# published asset is "unitsense-agent_0.7.1_..." while the release/download
+# URL path itself still uses the full tag ("v0.7.1") -- using $tag for both
+# 404s on every release.
+$version     = $tag -replace '^v', ''
+$zipName     = "unitsense-agent_${version}_windows_amd64.zip"
 $downloadUrl = "https://github.com/$repo/releases/download/$tag/$zipName"
 $checksumUrl = "https://github.com/$repo/releases/download/$tag/checksums.txt"
 

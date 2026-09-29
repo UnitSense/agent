@@ -97,8 +97,29 @@ type eventMsgPayload struct {
 }
 
 type responseItemPayload struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type    string `json:"type"`
+	Name    string `json:"name,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	} `json:"content,omitempty"`
+}
+
+// isGenuinePrompt reports whether a "message"/role="user" response_item is a
+// real human-typed turn, as opposed to a framework-injected synthetic message
+// (Codex wraps injected context in an XML-like tag, e.g. <environment_context>
+// or <turn_aborted>, or a "# Files mentioned by the user:" header) — verified
+// against real local rollout files, not assumed.
+func isGenuinePrompt(ri responseItemPayload) bool {
+	if ri.Type != "message" || ri.Role != "user" || len(ri.Content) == 0 {
+		return false
+	}
+	text := strings.TrimSpace(ri.Content[0].Text)
+	if text == "" || strings.HasPrefix(text, "<") || strings.HasPrefix(text, "#") {
+		return false
+	}
+	return true
 }
 
 func sanitizeModelKey(raw string) string {
@@ -129,6 +150,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		inputTokens               int64
 		outputTokens              int64
 		cacheReadTokens           int64
+		promptCount               int
 	}
 
 	newBucket := func() *bucket {
@@ -232,6 +254,9 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 						if ri.Name != "" {
 							b.toolsByName[truncateKey(ri.Name)]++
 						}
+					}
+					if isGenuinePrompt(ri) {
+						b.promptCount++
 					}
 				}
 
@@ -340,6 +365,10 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 		}
 		// Codex CLI does not emit cache_creation tokens (only cached_input_tokens
 		// which we map to CacheReadTokens). CacheCreationTokens stays nil.
+		if b.promptCount > 0 {
+			pc := b.promptCount
+			agg.PromptCount = &pc
+		}
 		out = append(out, agg)
 	}
 	return out, nil
@@ -366,6 +395,7 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 		inputTokens     int64
 		outputTokens    int64
 		cacheReadTokens int64
+		promptCount     int
 		// cwd from session_meta, used for git hints
 		cwd string
 	}
@@ -442,6 +472,9 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 							b.toolCounts[categorize(ri.Name)]++
 						}
 					}
+					if isGenuinePrompt(ri) {
+						b.promptCount++
+					}
 				}
 			case "event_msg":
 				var em eventMsgPayload
@@ -499,6 +532,10 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			s.CacheReadTokens = &v
 		}
 		// Codex doesn't emit cache_creation; field stays nil.
+		if b.promptCount > 0 {
+			pc := b.promptCount
+			s.PromptCount = &pc
+		}
 
 		// Git hints (opt-in via EnableGitHints).
 		if p.enableGitHints && b.cwd != "" {

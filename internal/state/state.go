@@ -8,12 +8,13 @@ import (
 )
 
 type State struct {
-	LastRunAt           string `json:"last_run_at,omitempty"`
-	LastRunStatus       string `json:"last_run_status,omitempty"`
-	LastRunDurationMS   int    `json:"last_run_duration_ms,omitempty"`
-	LastRunEventsSent   int    `json:"last_run_events_sent,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
+	LastRunAt                string `json:"last_run_at,omitempty"`
+	LastRunStatus            string `json:"last_run_status,omitempty"`
+	LastRunDurationMS        int    `json:"last_run_duration_ms,omitempty"`
+	LastRunEventsSent        int    `json:"last_run_events_sent,omitempty"`
+	LastError                string `json:"last_error,omitempty"`
+	ConsecutiveFailures      int    `json:"consecutive_failures,omitempty"`
+	ScheduledIntervalMinutes int    `json:"scheduled_interval_minutes,omitempty"`
 }
 
 func Load(path string) (*State, error) {

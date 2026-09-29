@@ -30,6 +30,9 @@ type DayAggregate struct {
 	OutputTokens        *int64
 	CacheReadTokens     *int64
 	CacheCreationTokens *int64
+	// PromptCount is the number of genuine human-authored turns (a "user"-typed
+	// event that is not a tool_result echo). Used to derive cost-per-prompt.
+	PromptCount *int
 }
 
 // SessionSummary is the per-session shape posted alongside daily aggregates.
@@ -57,6 +60,9 @@ type SessionSummary struct {
 	CacheCreationTokens       *int64
 	ToolCounts                map[string]int     // by category
 	SuccessfulToolInvocations *int
+	// PromptCount is the number of genuine human-authored turns in this
+	// session (a "user"-typed event that is not a tool_result echo).
+	PromptCount *int
 	// Local git hints (filled by F2 agent v0.5.0; nil/empty until then).
 	RepoRemoteHash            string
 	BranchName                string

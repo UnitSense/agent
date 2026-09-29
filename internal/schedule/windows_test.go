@@ -3,7 +3,9 @@
 package schedule
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +13,11 @@ import (
 
 func TestInstallCreatesTask(t *testing.T) {
 	bin := `C:\Windows\System32\cmd.exe`
-	t.Cleanup(func() { _ = Uninstall() })
+	launcherPath := filepath.Join(filepath.Dir(bin), "unitsense-agent-run.vbs")
+	t.Cleanup(func() {
+		_ = Uninstall()
+		_ = os.Remove(launcherPath)
+	})
 	if err := Install(bin, 10*time.Minute); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -19,8 +25,15 @@ func TestInstallCreatesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task not found after Install: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "cmd.exe") {
+	if !strings.Contains(string(out), "wscript.exe") {
 		t.Fatalf("task command not found in output: %s", out)
+	}
+	launcher, err := os.ReadFile(launcherPath)
+	if err != nil {
+		t.Fatalf("launcher script not written: %v", err)
+	}
+	if !strings.Contains(string(launcher), bin) {
+		t.Fatalf("launcher does not reference binary path: %s", launcher)
 	}
 }
 

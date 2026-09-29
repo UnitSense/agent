@@ -80,6 +80,14 @@ func TestParseFixture(t *testing.T) {
 	if a.CacheCreationTokens == nil || *a.CacheCreationTokens != 195 {
 		t.Errorf("CacheCreationTokens = %v, want 195", a.CacheCreationTokens)
 	}
+	// Regression test: Claude Code represents a plain text-only user turn as
+	// a bare JSON string for message.content, not an array of blocks (only
+	// tool_use/tool_result turns use the array form). A user turn with a
+	// bare-string content ("please continue") must still count as a real
+	// prompt, not silently fail to unmarshal and vanish from every count.
+	if a.PromptCount == nil || *a.PromptCount != 2 {
+		t.Errorf("PromptCount = %v, want 2 (\"hi\" [array] + \"please continue\" [bare string])", a.PromptCount)
+	}
 }
 
 func TestAggregateSessions(t *testing.T) {

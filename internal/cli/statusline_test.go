@@ -59,6 +59,29 @@ func TestEnsureClaudeStatuslineDoesNotClobber(t *testing.T) {
 	}
 }
 
+func TestEnsureClaudeStatuslineRewritesStalePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Simulates a prior install whose binary has since moved (e.g. reinstalled
+	// via a different path) -- the statusLine entry is stale but still ours.
+	existing := `{"statusLine":{"type":"command","command":"C:\\old\\path\\unitsense-agent.exe statusline"}}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	note := ensureClaudeStatusline()
+	if !strings.Contains(note, "Updated") {
+		t.Errorf("note = %q, want an 'Updated' confirmation", note)
+	}
+	if cmd := readStatusLineCmd(t, home); strings.Contains(cmd, "old\\path") {
+		t.Errorf("stale statusLine command was not rewritten: %q", cmd)
+	}
+}
+
 func TestEnsureClaudeStatuslineIdempotent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

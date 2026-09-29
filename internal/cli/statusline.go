@@ -64,6 +64,16 @@ Wire it up in ~/.claude/settings.json:
 
 func init() { RegisterCommand(statuslineCmd) }
 
+// isUnitsenseStatuslineCommand reports whether c looks like a prior
+// "<some unitsense-agent binary> statusline" entry, regardless of exact
+// path or a ".exe" suffix on Windows. A naive literal substring check for
+// "unitsense-agent statusline" never matches a real Windows path (it's
+// always "unitsense-agent.exe statusline"), so this checks the two parts
+// independently instead.
+func isUnitsenseStatuslineCommand(c string) bool {
+	return strings.Contains(c, "unitsense-agent") && strings.HasSuffix(strings.TrimSpace(c), "statusline")
+}
+
 // ensureClaudeStatusline wires this binary as Claude Code's statusLine command
 // so live subscription quota gets captured. Non-destructive: it never clobbers
 // an existing statusLine (just tells the user how to add capture). Returns a
@@ -90,8 +100,22 @@ func ensureClaudeStatusline() string {
 	}
 	if existing, ok := settings["statusLine"]; ok {
 		if m, ok := existing.(map[string]any); ok {
-			if c, _ := m["command"].(string); c == cmdStr || strings.Contains(c, "unitsense-agent statusline") {
+			c, _ := m["command"].(string)
+			switch {
+			case c == cmdStr:
 				return "Claude Code statusLine already wired for quota capture."
+			case isUnitsenseStatuslineCommand(c):
+				// Points at unitsense-agent but from a stale binary path (e.g.
+				// a reinstall moved the binary to a new location) -- rewrite it
+				// in place rather than silently leaving quota capture broken,
+				// which is exactly what happened before this fix.
+				m["command"] = cmdStr
+				settings["statusLine"] = m
+				data, err := json.MarshalIndent(settings, "", "  ")
+				if err == nil && os.WriteFile(path, append(data, '\n'), 0o644) == nil {
+					return "Updated Claude Code statusLine — it was pointing at a stale binary location."
+				}
+				return fmt.Sprintf("statusLine points at a stale path (%s) — couldn't rewrite it, re-add manually: %q", c, cmdStr)
 			}
 		}
 		return fmt.Sprintf("You already have a Claude Code statusLine — to capture subscription quota, "+
