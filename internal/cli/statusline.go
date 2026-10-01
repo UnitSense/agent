@@ -90,7 +90,15 @@ func ensureClaudeStatusline() string {
 	if err != nil || self == "" {
 		self = "unitsense-agent"
 	}
-	cmdStr := self + " statusline"
+	// Claude Code invokes a "type": "command" statusLine through a shell, so
+	// an unquoted path containing a space (e.g. "C:\Users\Jane Doe\...") gets
+	// split at the space and fails as "not recognized as a command" --
+	// silently, since statusLine errors don't surface anywhere visible. Quote
+	// the executable path (never the "statusline" argument) so this works
+	// regardless of whether the install path or username contains spaces.
+	// fmt's %q is NOT used here -- it Go-escapes backslashes (\ -> \\), which
+	// would corrupt a literal Windows path meant for cmd.exe, not Go source.
+	cmdStr := `"` + self + `" statusline`
 
 	settings := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
