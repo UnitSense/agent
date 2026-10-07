@@ -38,6 +38,19 @@ func init() {
 	RegisterCommand(setupCmd)
 }
 
+// resolveMachineID reuses the machine ID from an already-saved config at
+// path, if one exists, so re-running setup on a machine that's already
+// registered updates its existing device instead of registering a new one
+// each time. Falls back to a fresh random ID when no config is saved yet,
+// or the existing one can't be read.
+func resolveMachineID(path string) uuid.UUID {
+	cfg, err := config.Load(path)
+	if err != nil || cfg.MachineID == uuid.Nil {
+		return uuid.New()
+	}
+	return cfg.MachineID
+}
+
 func runSetup(cmd *cobra.Command, args []string) error {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -84,7 +97,11 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server URL must be HTTPS (or http localhost): %s", setupServerURL)
 	}
 
-	machineID := uuid.New()
+	path, err := config.DefaultPath()
+	if err != nil {
+		return err
+	}
+	machineID := resolveMachineID(path)
 	hostname, _ := os.Hostname()
 
 	cl := client.New(setupServerURL, regToken)
@@ -120,10 +137,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		DataTier:       "metrics",
 		JitterSeconds:  30,
 		EnableGitHints: setupEnableGitHints,
-	}
-	path, err := config.DefaultPath()
-	if err != nil {
-		return err
 	}
 	if err := config.Save(path, cfg); err != nil {
 		return err
