@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.7.0" // 0.7.0: capture rate_limits (subscription quota)
+const ParserVersionConst = "codex-cli-parser-0.8.0" // 0.8.0: fix session_meta being window-filtered for sessions older than the lookback, which silently dropped their session count (tokens/tools still counted correctly)
 
 // Codex tool-name categorization. Codex CLI emits a small set of canonical
 // names so the mapping is short.
@@ -198,7 +198,42 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 				continue
 			}
-			if ev.Timestamp.IsZero() || ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
+			if ev.Timestamp.IsZero() {
+				continue
+			}
+
+			// session_meta carries the session's identity (its id) and appears
+			// exactly once, as the first line of the file, at the session's
+			// real start time. Learn the id here regardless of the window --
+			// a session that started before window.From can still have real
+			// activity inside the window on this run, and if session_meta
+			// itself got window-filtered, currentSessionID would never be
+			// set, silently dropping that session's count (and every later
+			// run's, since session_meta's timestamp never moves forward).
+			if ev.Type == "session_meta" {
+				var sm sessionMetaPayload
+				if err := json.Unmarshal(ev.Payload, &sm); err == nil && sm.ID != "" {
+					currentSessionID = sm.ID
+					if !ev.Timestamp.Before(window.From) && ev.Timestamp.Before(window.To) {
+						dateStr := ev.Timestamp.UTC().Format("2006-01-02")
+						b := getBucket(dateStr)
+						b.sessionIDs[sm.ID] = struct{}{}
+						st := b.sessionTimes[sm.ID]
+						if st == nil {
+							st = &sessionTimes{}
+							b.sessionTimes[sm.ID] = st
+						}
+						if st.min.IsZero() || ev.Timestamp.Before(st.min) {
+							st.min = ev.Timestamp
+						}
+						if ev.Timestamp.After(st.max) {
+							st.max = ev.Timestamp
+						}
+					}
+				}
+				continue
+			}
+			if ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
 				continue
 			}
 
@@ -207,6 +242,7 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 
 			// Track min/max for elapsed time using the current session id
 			if currentSessionID != "" {
+				b.sessionIDs[currentSessionID] = struct{}{}
 				st := b.sessionTimes[currentSessionID]
 				if st == nil {
 					st = &sessionTimes{}
@@ -221,24 +257,6 @@ func (p *Parser) Aggregate(window parsers.TimeWindow) ([]parsers.DayAggregate, e
 			}
 
 			switch ev.Type {
-			case "session_meta":
-				var sm sessionMetaPayload
-				if err := json.Unmarshal(ev.Payload, &sm); err == nil && sm.ID != "" {
-					currentSessionID = sm.ID
-					b.sessionIDs[sm.ID] = struct{}{}
-					// Initialize session times for this date
-					if b.sessionTimes[sm.ID] == nil {
-						b.sessionTimes[sm.ID] = &sessionTimes{}
-					}
-					st := b.sessionTimes[sm.ID]
-					if st.min.IsZero() || ev.Timestamp.Before(st.min) {
-						st.min = ev.Timestamp
-					}
-					if ev.Timestamp.After(st.max) {
-						st.max = ev.Timestamp
-					}
-				}
-
 			case "turn_context":
 				var tc turnContextPayload
 				if err := json.Unmarshal(ev.Payload, &tc); err == nil && tc.Model != "" {
@@ -421,10 +439,18 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
 				continue
 			}
-			if ev.Timestamp.IsZero() || ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
+			if ev.Timestamp.IsZero() {
 				continue
 			}
 
+			// session_meta carries the session's identity (its id) and appears
+			// exactly once, as the first line of the file, at the session's
+			// real start time. Learn the id here regardless of the window --
+			// a session that started before window.From can still have real
+			// activity inside the window on this run, and if session_meta
+			// itself got window-filtered, currentSessionID would never be
+			// set, silently dropping that session's count (and every later
+			// run's, since session_meta's timestamp never moves forward).
 			if ev.Type == "session_meta" {
 				var sm sessionMetaPayload
 				if err := json.Unmarshal(ev.Payload, &sm); err == nil && sm.ID != "" {
@@ -442,6 +468,9 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 						bySession[currentSessionID] = b
 					}
 				}
+				continue
+			}
+			if ev.Timestamp.Before(window.From) || !ev.Timestamp.Before(window.To) {
 				continue
 			}
 			if currentSessionID == "" {

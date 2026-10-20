@@ -18,11 +18,12 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.7.0
-// (0.7.0 added rate_limits capture — see ratelimits.go).
+// TestParserVersionBump verifies the version constant reflects v0.8.0
+// (0.8.0 fixed session_meta being window-filtered for sessions older than
+// the lookback window — see parser.go).
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "codex-cli-parser-0.7.0" {
-		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.7.0", ParserVersionConst)
+	if ParserVersionConst != "codex-cli-parser-0.8.0" {
+		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.8.0", ParserVersionConst)
 	}
 }
 
@@ -228,5 +229,57 @@ func TestAggregateSessionsGitHintsEnabled(t *testing.T) {
 	// No remote → hash empty
 	if s.RepoRemoteHash != "" {
 		t.Errorf("RepoRemoteHash = %q, want empty (no remote)", s.RepoRemoteHash)
+	}
+}
+
+// TestAggregateSessionsOldSessionMeta covers the bug a client (epros) hit:
+// session_meta sits at the file's first line, at the session's real start
+// time. A session that started before window.From but has real activity
+// inside the window must still be counted — not silently dropped because
+// its one and only session_meta line fell outside the lookback window.
+func TestAggregateSessionsOldSessionMeta(t *testing.T) {
+	rootDir := t.TempDir()
+
+	now := time.Now().UTC()
+	sessionStart := now.Add(-48 * time.Hour) // well before any normal lookback window
+	recentActivity := now.Add(-10 * time.Minute)
+
+	sessionMeta := fmt.Sprintf(
+		`{"timestamp":"%s","type":"session_meta","payload":{"id":"cdx-old-1","cwd":"/tmp/work"}}`,
+		sessionStart.Format(time.RFC3339),
+	)
+	recentTurn := fmt.Sprintf(
+		`{"timestamp":"%s","type":"turn_context","payload":{"model":"gpt-test"}}`,
+		recentActivity.Format(time.RFC3339),
+	)
+	content := sessionMeta + "\n" + recentTurn + "\n"
+	if err := os.WriteFile(filepath.Join(rootDir, "session.jsonl"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParser(rootDir)
+	window := parsers.TimeWindow{From: now.Add(-24 * time.Hour), To: now.Add(time.Hour)}
+
+	sessions, err := p.AggregateSessions(window)
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session (recent activity on an old session must still count), got %d", len(sessions))
+	}
+	if sessions[0].SessionKey != "cdx-old-1" {
+		t.Errorf("SessionKey = %q, want cdx-old-1", sessions[0].SessionKey)
+	}
+
+	aggs, err := p.Aggregate(window)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var total int
+	for _, a := range aggs {
+		total += a.SessionCount
+	}
+	if total != 1 {
+		t.Errorf("Aggregate: expected total SessionCount 1 across all days, got %d", total)
 	}
 }
