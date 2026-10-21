@@ -68,7 +68,9 @@ func newTestDB(t *testing.T) string {
 			cwd TEXT,
 			estimated_cost_usd REAL,
 			actual_cost_usd REAL,
-			cost_status TEXT
+			cost_status TEXT,
+			parent_session_id TEXT,
+			title TEXT
 		)
 	`)
 	if err != nil {
@@ -219,7 +221,8 @@ func TestAggregateSessionsPrefersActualCostOverEstimated(t *testing.T) {
 			tool_call_count INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0,
 			output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
 			cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0,
-			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT
+			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT,
+			parent_session_id TEXT, title TEXT
 		)`)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -275,7 +278,8 @@ func TestAggregateSessionsSubscriptionIncludedCall(t *testing.T) {
 			tool_call_count INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0,
 			output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
 			cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0,
-			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT
+			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT,
+			parent_session_id TEXT, title TEXT
 		)`)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -402,7 +406,8 @@ func TestAggregateSessionsAutoRoutedAuxiliaryTask(t *testing.T) {
 			tool_call_count INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0,
 			output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
 			cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0,
-			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT
+			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT,
+			parent_session_id TEXT, title TEXT
 		)`)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -483,5 +488,83 @@ func TestAggregateSessionsAutoRoutedAuxiliaryTask(t *testing.T) {
 	}
 	if s.CostSource != "estimated" {
 		t.Errorf("CostSource = %q, want estimated", s.CostSource)
+	}
+}
+
+// TestAggregateSessionsSubagentFields confirms a subagent session (e.g. one
+// spawned by Hermes' /review command) carries its title and raw parent
+// session id through into SessionSummary -- and that an ordinary session
+// with neither column set leaves both fields empty rather than erroring on
+// the NULLs. Fixture values mirror a real subagent session confirmed by hand
+// (title "Subagent: Review recent work", linked via parent_session_id).
+func TestAggregateSessionsSubagentFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			id TEXT PRIMARY KEY, started_at REAL NOT NULL, ended_at REAL, model TEXT,
+			tool_call_count INTEGER DEFAULT 0, input_tokens INTEGER DEFAULT 0,
+			output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+			cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0,
+			cwd TEXT, estimated_cost_usd REAL, actual_cost_usd REAL, cost_status TEXT,
+			parent_session_id TEXT, title TEXT
+		)`)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(sessionModelUsageDDL); err != nil {
+		t.Fatalf("create session_model_usage: %v", err)
+	}
+	day := float64(time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC).Unix())
+	_, err = db.Exec(
+		`INSERT INTO sessions (id, started_at, model, cost_status, parent_session_id, title)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"subagent-sess", day, "gemini-3-flash-preview", "estimated", "parent-sess", "Subagent: Review recent work",
+	)
+	if err != nil {
+		t.Fatalf("insert subagent session: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO sessions (id, started_at, model, cost_status)
+		 VALUES (?, ?, ?, ?)`,
+		"plain-sess", day, "gemini-3-flash-preview", "estimated",
+	)
+	if err != nil {
+		t.Fatalf("insert plain session: %v", err)
+	}
+	db.Close()
+
+	p := NewParser(path)
+	from := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC)
+	sessions, err := p.AggregateSessions(parsers.TimeWindow{From: from, To: to})
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	byKey := map[string]parsers.SessionSummary{}
+	for _, s := range sessions {
+		byKey[s.SessionKey] = s
+	}
+
+	sub := byKey["subagent-sess"]
+	if sub.Title != "Subagent: Review recent work" {
+		t.Errorf("subagent Title = %q, want %q", sub.Title, "Subagent: Review recent work")
+	}
+	if sub.ParentSessionKey != "parent-sess" {
+		t.Errorf("subagent ParentSessionKey = %q, want %q", sub.ParentSessionKey, "parent-sess")
+	}
+
+	plain := byKey["plain-sess"]
+	if plain.Title != "" {
+		t.Errorf("plain session Title = %q, want empty", plain.Title)
+	}
+	if plain.ParentSessionKey != "" {
+		t.Errorf("plain session ParentSessionKey = %q, want empty", plain.ParentSessionKey)
 	}
 }

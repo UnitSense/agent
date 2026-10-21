@@ -336,6 +336,23 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 		if s.CostSource != "" {
 			ev["cost_source"] = s.CostSource
 		}
+		if s.Title != "" {
+			ev["title"] = s.Title
+		}
+		if s.ParentSessionKey != "" {
+			// Deliberately NOT the same formula as session_key_hash above:
+			// that one folds in session_date to disambiguate a raw id reused
+			// across days, but we don't know the *parent's own* session_date
+			// here -- only its raw id. Hashing on machine_id + raw id alone
+			// keeps this stable regardless of which child references it, so
+			// the dashboard side (not yet built) can resolve it against a
+			// parent session uploaded under the same scheme.
+			parentHasher := sha256.New()
+			parentHasher.Write([]byte(machineID))
+			parentHasher.Write([]byte(":"))
+			parentHasher.Write([]byte(s.ParentSessionKey))
+			ev["parent_session_key_hash"] = hex.EncodeToString(parentHasher.Sum(nil))
+		}
 		out = append(out, ev)
 	}
 	return out

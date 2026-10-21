@@ -171,17 +171,23 @@ type sessionRow struct {
 	estimatedCostUSD sql.NullFloat64
 	actualCostUSD    sql.NullFloat64
 	costStatus       sql.NullString
+	// parentSessionID is non-empty when this session is a subagent (e.g.
+	// spawned by /review or delegate_task) -- confirmed by hand against a
+	// real subagent session, linked back to the exact session that created
+	// it via a self-referencing foreign key in Hermes' own schema.
+	parentSessionID sql.NullString
+	title           sql.NullString
 }
 
 const sessionCols = `id, started_at, ended_at, model, tool_call_count,
 	input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,
-	cwd, estimated_cost_usd, actual_cost_usd, cost_status`
+	cwd, estimated_cost_usd, actual_cost_usd, cost_status, parent_session_id, title`
 
 func scanSession(rows *sql.Rows) (sessionRow, error) {
 	var s sessionRow
 	err := rows.Scan(&s.id, &s.startedAt, &s.endedAt, &s.model, &s.toolCallCount,
 		&s.inputTokens, &s.outputTokens, &s.cacheReadTokens, &s.cacheWriteTokens, &s.reasoningTokens,
-		&s.cwd, &s.estimatedCostUSD, &s.actualCostUSD, &s.costStatus)
+		&s.cwd, &s.estimatedCostUSD, &s.actualCostUSD, &s.costStatus, &s.parentSessionID, &s.title)
 	return s, err
 }
 
@@ -523,6 +529,12 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			// bucket in the shared schema, so it stays empty rather than
 			// inventing one.
 			ToolCounts: map[string]int{},
+		}
+		if s.title.Valid && s.title.String != "" {
+			summary.Title = s.title.String
+		}
+		if s.parentSessionID.Valid && s.parentSessionID.String != "" {
+			summary.ParentSessionKey = s.parentSessionID.String
 		}
 		if bd.inputTokens > 0 {
 			v := bd.inputTokens

@@ -48,8 +48,8 @@ type DayAggregate struct {
 //   - ToolCounts uses category names (read/edit/write/shell/search/other),
 //     not raw tool/command names where possible.
 type SessionSummary struct {
-	SessionKey                string             // raw source-session id; hashed before post
-	SessionDate               time.Time          // UTC date the session occurred on
+	SessionKey                string    // raw source-session id; hashed before post
+	SessionDate               time.Time // UTC date the session occurred on
 	StartedAt                 time.Time
 	EndedAt                   time.Time
 	ElapsedMinutes            int
@@ -58,15 +58,15 @@ type SessionSummary struct {
 	OutputTokens              *int64
 	CacheReadTokens           *int64
 	CacheCreationTokens       *int64
-	ToolCounts                map[string]int     // by category
+	ToolCounts                map[string]int // by category
 	SuccessfulToolInvocations *int
 	// PromptCount is the number of genuine human-authored turns in this
 	// session (a "user"-typed event that is not a tool_result echo).
 	PromptCount *int
 	// Local git hints (filled by F2 agent v0.5.0; nil/empty until then).
-	RepoRemoteHash            string
-	BranchName                string
-	CommitSHAs                []string
+	RepoRemoteHash string
+	BranchName     string
+	CommitSHAs     []string
 	// EstimatedCostUSD/CostSource mirror DayAggregate's fields, same meaning.
 	// nil/"" for sources that report no cost at all (Claude Code, Codex CLI —
 	// UnitSense's own price book estimates their cost downstream instead).
@@ -75,6 +75,14 @@ type SessionSummary struct {
 	// re-estimated by this agent).
 	EstimatedCostUSD *float64
 	CostSource       string
+	// Title/ParentSessionKey are nil/"" for sources that don't report them
+	// (Claude Code, Codex CLI). Hermes today: Title is its own session title
+	// (e.g. "Subagent: Review recent work" for a /review-spawned subagent);
+	// ParentSessionKey is the raw parent session id when this session is a
+	// subagent, hashed the same way as SessionKey before posting -- never
+	// sent as a raw filesystem/session id.
+	Title            string
+	ParentSessionKey string
 }
 
 type Parser interface {
