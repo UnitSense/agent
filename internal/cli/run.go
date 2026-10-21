@@ -15,6 +15,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 	"github.com/UnitSense/agent/internal/parsers/claude_code"
 	"github.com/UnitSense/agent/internal/parsers/codex_cli"
+	"github.com/UnitSense/agent/internal/parsers/hermes"
 	"github.com/UnitSense/agent/internal/schedule"
 	"github.com/UnitSense/agent/internal/state"
 	"github.com/google/uuid"
@@ -91,6 +92,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 				filepath.Join(home, ".codex", "sessions"),
 				cfg.EnableGitHints,
 			))
+		case "hermes":
+			dbPath, err := hermes.DefaultDBPath()
+			if err != nil {
+				continue
+			}
+			parserList = append(parserList, hermes.NewParserWithOptions(dbPath, cfg.EnableGitHints))
 		}
 	}
 	if len(parserList) == 0 {
@@ -322,6 +329,12 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 		}
 		if len(s.CommitSHAs) > 0 {
 			ev["commit_shas"] = s.CommitSHAs
+		}
+		if s.EstimatedCostUSD != nil {
+			ev["estimated_cost_usd"] = *s.EstimatedCostUSD
+		}
+		if s.CostSource != "" {
+			ev["cost_source"] = s.CostSource
 		}
 		out = append(out, ev)
 	}

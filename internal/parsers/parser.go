@@ -67,6 +67,14 @@ type SessionSummary struct {
 	RepoRemoteHash            string
 	BranchName                string
 	CommitSHAs                []string
+	// EstimatedCostUSD/CostSource mirror DayAggregate's fields, same meaning.
+	// nil/"" for sources that report no cost at all (Claude Code, Codex CLI —
+	// UnitSense's own price book estimates their cost downstream instead).
+	// Populated directly when a source computes its own real cost per
+	// session (Hermes today: its own estimated/actual cost, read as-is, not
+	// re-estimated by this agent).
+	EstimatedCostUSD *float64
+	CostSource       string
 }
 
 type Parser interface {

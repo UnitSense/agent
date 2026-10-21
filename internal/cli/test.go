@@ -11,6 +11,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers"
 	"github.com/UnitSense/agent/internal/parsers/claude_code"
 	"github.com/UnitSense/agent/internal/parsers/codex_cli"
+	"github.com/UnitSense/agent/internal/parsers/hermes"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -50,6 +51,12 @@ var testCmd = &cobra.Command{
 				pp = claude_code.NewParser(filepath.Join(home, ".claude", "projects"))
 			case "codex_cli":
 				pp = codex_cli.NewParser(filepath.Join(home, ".codex", "sessions"))
+			case "hermes":
+				dbPath, err := hermes.DefaultDBPath()
+				if err != nil {
+					continue
+				}
+				pp = hermes.NewParser(dbPath)
 			default:
 				continue
 			}
