@@ -11,11 +11,11 @@ import (
 
 // TestSessionsToPayloadSubagentFields confirms Title passes through as-is
 // (it's a deliberately human-readable label, not a raw filesystem id) and
-// ParentSessionKey gets hashed into parent_session_key_hash -- deliberately
-// NOT the same formula as session_key_hash (that one folds in session_date,
-// which we don't know for the parent from here), so the hash is just
-// machine_id + raw id. Confirms this is deterministic by recomputing the
-// same hash independently.
+// ParentSessionKey gets hashed into parent_session_key_hash using
+// undatedSessionHash -- deliberately NOT the same formula as session_key_hash
+// (that one folds in session_date, which we don't know for the parent from
+// here). Confirms this is deterministic by recomputing the same hash
+// independently.
 func TestSessionsToPayloadSubagentFields(t *testing.T) {
 	machineID := "11111111-1111-1111-1111-111111111111"
 	day := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
@@ -93,5 +93,47 @@ func TestSessionsToPayloadOmitsEmptySubagentFields(t *testing.T) {
 	}
 	if _, ok := ev["parent_session_key_hash"]; ok {
 		t.Errorf("parent_session_key_hash present for a session with no parent: %v", ev["parent_session_key_hash"])
+	}
+}
+
+// TestSessionIDHashMatchesParentHash is the fix for the bug where a child's
+// parent_session_key_hash could never match its parent's own session_key_hash
+// (that one always folds in session_date; the child-side hash never did, so
+// they were built from different formulas and could never line up no matter
+// the timing). Every session now also gets session_id_hash from the exact
+// same undated formula, so a parent's session_id_hash lines up with a
+// child's parent_session_key_hash whenever the child's raw ParentSessionKey
+// equals the parent's own raw SessionKey.
+func TestSessionIDHashMatchesParentHash(t *testing.T) {
+	machineID := "11111111-1111-1111-1111-111111111111"
+	day := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	sessions := []parsers.SessionSummary{
+		{
+			SessionKey:  "parent-raw-id",
+			SessionDate: day,
+			StartedAt:   day,
+			EndedAt:     day,
+			ModelsUsed:  map[string]int{},
+			ToolCounts:  map[string]int{},
+		},
+		{
+			SessionKey:       "child-raw-id",
+			SessionDate:      day.AddDate(0, 0, 1),
+			StartedAt:        day.AddDate(0, 0, 1),
+			EndedAt:          day.AddDate(0, 0, 1),
+			ParentSessionKey: "parent-raw-id",
+			ModelsUsed:       map[string]int{},
+			ToolCounts:       map[string]int{},
+		},
+	}
+
+	out := sessionsToPayload(sessions, machineID)
+	parentIDHash := out[0]["session_id_hash"]
+	childParentHash := out[1]["parent_session_key_hash"]
+	if parentIDHash == nil || parentIDHash == "" {
+		t.Fatalf("parent session_id_hash missing: %v", out[0])
+	}
+	if parentIDHash != childParentHash {
+		t.Errorf("parent session_id_hash = %v, child parent_session_key_hash = %v, want equal", parentIDHash, childParentHash)
 	}
 }

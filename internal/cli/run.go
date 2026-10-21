@@ -279,6 +279,21 @@ func reconcileSchedule(st *state.State, recommendedMinutes int) {
 	st.ScheduledIntervalMinutes = recommendedMinutes
 }
 
+// undatedSessionHash hashes machine_id + a raw session id with no date mixed
+// in. Used two ways on the same formula: as session_id_hash (every session
+// gets one, naming itself) and as parent_session_key_hash (a child names its
+// parent). Because both sides use this exact formula, a child's
+// parent_session_key_hash lines up with its parent's own session_id_hash --
+// unlike session_key_hash below, which folds in session_date and so can
+// never match a hash that doesn't.
+func undatedSessionHash(machineID, rawID string) string {
+	h := sha256.New()
+	h.Write([]byte(machineID))
+	h.Write([]byte(":"))
+	h.Write([]byte(rawID))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // sessionsToPayload converts SessionSummary structs into JSON-ready maps for
 // the /api/v1/agent/sessions endpoint. Hashes the raw session key using the
 // agent's machine_id + session_date so the server never sees raw filesystem
@@ -296,6 +311,7 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 
 		ev := map[string]any{
 			"session_key_hash": keyHash,
+			"session_id_hash":  undatedSessionHash(machineID, s.SessionKey),
 			"session_date":     s.SessionDate.Format("2006-01-02"),
 			"started_at":       s.StartedAt.Format(time.RFC3339),
 			"ended_at":         s.EndedAt.Format(time.RFC3339),
@@ -340,18 +356,7 @@ func sessionsToPayload(sessions []parsers.SessionSummary, machineID string) []ma
 			ev["title"] = s.Title
 		}
 		if s.ParentSessionKey != "" {
-			// Deliberately NOT the same formula as session_key_hash above:
-			// that one folds in session_date to disambiguate a raw id reused
-			// across days, but we don't know the *parent's own* session_date
-			// here -- only its raw id. Hashing on machine_id + raw id alone
-			// keeps this stable regardless of which child references it, so
-			// the dashboard side (not yet built) can resolve it against a
-			// parent session uploaded under the same scheme.
-			parentHasher := sha256.New()
-			parentHasher.Write([]byte(machineID))
-			parentHasher.Write([]byte(":"))
-			parentHasher.Write([]byte(s.ParentSessionKey))
-			ev["parent_session_key_hash"] = hex.EncodeToString(parentHasher.Sum(nil))
+			ev["parent_session_key_hash"] = undatedSessionHash(machineID, s.ParentSessionKey)
 		}
 		out = append(out, ev)
 	}
