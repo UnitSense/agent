@@ -135,3 +135,58 @@ func TestExtractRealRepo(t *testing.T) {
 		t.Errorf("expected no commits outside window, got %v", h3.CommitSHAs)
 	}
 }
+
+// TestExtractCapsCommitSHAs confirms a session with more than maxCommitSHAs
+// commits (e.g. a long-lived session re-scanned by a wide --window backfill)
+// gets truncated to the 50 most recent, not rejected wholesale by the server
+// for exceeding its own commit_shas array limit.
+func TestExtractCapsCommitSHAs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	run := func(env []string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	baseEnv := []string{
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	}
+
+	run(baseEnv, "init", dir)
+
+	since := time.Now().Add(-48 * time.Hour)
+	const totalCommits = 55
+	var newestSHA string
+	for i := 0; i < totalCommits; i++ {
+		f := dir + "/file.txt"
+		os.WriteFile(f, []byte(strings.Repeat("x", i+1)), 0644)
+		run(baseEnv, "-C", dir, "add", "file.txt")
+		commitTime := since.Add(time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
+		env := append(append([]string{}, baseEnv...), "GIT_AUTHOR_DATE="+commitTime, "GIT_COMMITTER_DATE="+commitTime)
+		cmd := exec.Command("git", "-C", dir, "commit", "-m", "commit")
+		cmd.Env = append(os.Environ(), env...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git commit: %v\n%s", err, out)
+		}
+		if i == totalCommits-1 {
+			out, _ := exec.Command("git", "-C", dir, "log", "-1", "--format=%h").Output()
+			newestSHA = strings.TrimSpace(string(out))
+		}
+	}
+
+	h := Extract(dir, since, time.Now())
+	if len(h.CommitSHAs) != maxCommitSHAs {
+		t.Fatalf("CommitSHAs length = %d, want %d (capped)", len(h.CommitSHAs), maxCommitSHAs)
+	}
+	if h.CommitSHAs[0] != newestSHA {
+		t.Errorf("CommitSHAs[0] = %q, want newest commit %q -- cap should keep the most recent commits", h.CommitSHAs[0], newestSHA)
+	}
+}

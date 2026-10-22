@@ -26,6 +26,14 @@ type Hints struct {
 	CommitSHAs []string
 }
 
+// maxCommitSHAs caps how many commit SHAs a single session reports, matching
+// the server's own limit (sessionSummarySchema's commit_shas: z.array(SHA)
+// .max(50)). A long-lived session -- or a wide --window backfill scanning one
+// for the first time -- can otherwise collect hundreds of commits, and the
+// server rejects the ENTIRE sync batch (up to 200 sessions) over this one
+// oversized field, not just the session that triggered it.
+const maxCommitSHAs = 50
+
 // Extract runs git commands against workspacePath and returns git hints for the
 // given time window. All errors are suppressed; partial results are returned.
 // If git is not installed or workspacePath is not a git repo, Hints{} is returned.
@@ -68,6 +76,12 @@ func Extract(workspacePath string, since, until time.Time) Hints {
 				h.CommitSHAs = append(h.CommitSHAs, line)
 			}
 		}
+	}
+
+	// git log (no --reverse) returns newest-first, so keeping the first N
+	// keeps the most recent commits and drops the oldest.
+	if len(h.CommitSHAs) > maxCommitSHAs {
+		h.CommitSHAs = h.CommitSHAs[:maxCommitSHAs]
 	}
 
 	return h
