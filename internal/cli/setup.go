@@ -150,5 +150,6 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		fmt.Println("\n" + note)
 	}
 	fmt.Println("\nNext: schedule periodic sync — `unitsense-agent install --schedule=10m`")
+	fmt.Println("To backfill existing sessions (the schedule only looks back 24h): `unitsense-agent run --window=720h`")
 	return nil
 }
