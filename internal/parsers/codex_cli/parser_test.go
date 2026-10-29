@@ -18,12 +18,12 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.8.0
-// (0.8.0 fixed session_meta being window-filtered for sessions older than
-// the lookback window — see parser.go).
+// TestParserVersionBump verifies the version constant reflects v0.8.1
+// (0.8.1 drops session summaries whose session_date falls outside the
+// server's accepted range instead of posting them — see parser.go).
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "codex-cli-parser-0.8.0" {
-		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.8.0", ParserVersionConst)
+	if ParserVersionConst != "codex-cli-parser-0.8.1" {
+		t.Errorf("ParserVersionConst = %q, want codex-cli-parser-0.8.1", ParserVersionConst)
 	}
 }
 
@@ -281,5 +281,62 @@ func TestAggregateSessionsOldSessionMeta(t *testing.T) {
 	}
 	if total != 1 {
 		t.Errorf("Aggregate: expected total SessionCount 1 across all days, got %d", total)
+	}
+}
+
+// TestAggregateSessionsDropsSessionOlderThanServerLimit reproduces the real
+// 422 a user hit: Codex resumes the same rollout file across long gaps, so
+// session_meta (the session's true, unclamped start date) can be far older
+// than the server's "session_date must be within [today-90d, today+1d]"
+// validation, even though the session has genuine activity inside this run's
+// window. The server validates the whole sessions batch before writing
+// anything, so one such session used to silently discard every other valid
+// session in the same POST. AggregateSessions must exclude it; Aggregate
+// (which the server never rejects wholesale, and which buckets by each
+// event's own in-window timestamp, not session_meta's date) must still count
+// its in-window activity.
+func TestAggregateSessionsDropsSessionOlderThanServerLimit(t *testing.T) {
+	rootDir := t.TempDir()
+
+	now := time.Now().UTC()
+	sessionStart := now.AddDate(0, 0, -120) // well past the server's 90-day cutoff
+	recentActivity := now.Add(-10 * time.Minute)
+
+	sessionMeta := fmt.Sprintf(
+		`{"timestamp":"%s","type":"session_meta","payload":{"id":"cdx-stale-1","cwd":"/tmp/work"}}`,
+		sessionStart.Format(time.RFC3339),
+	)
+	recentTurn := fmt.Sprintf(
+		`{"timestamp":"%s","type":"turn_context","payload":{"model":"gpt-test"}}`,
+		recentActivity.Format(time.RFC3339),
+	)
+	content := sessionMeta + "\n" + recentTurn + "\n"
+	if err := os.WriteFile(filepath.Join(rootDir, "session.jsonl"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParser(rootDir)
+	window := parsers.TimeWindow{From: now.Add(-24 * time.Hour), To: now.Add(time.Hour)}
+
+	sessions, err := p.AggregateSessions(window)
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected the stale resumed session to be dropped (would 422 and poison the batch), got %d", len(sessions))
+	}
+
+	// The day-level count for the recent activity must still land -- only
+	// the per-session summary row is excluded, not the activity itself.
+	aggs, err := p.Aggregate(window)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var total int
+	for _, a := range aggs {
+		total += a.SessionCount
+	}
+	if total != 1 {
+		t.Errorf("Aggregate: expected total SessionCount 1 across all days (recent activity must still be tracked), got %d", total)
 	}
 }
