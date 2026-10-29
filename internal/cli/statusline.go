@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,27 +43,51 @@ var statuslineCmd = &cobra.Command{
 rate-limit utilization (5-hour + weekly) so 'unitsense-agent run' can report
 authoritative subscription quota, and prints a status line to stdout.
 
-Wire it up in ~/.claude/settings.json:
+'unitsense-agent setup' wires this up in ~/.claude/settings.json for you:
 
-  { "statusLine": { "type": "command", "command": "unitsense-agent statusline" } }`,
+  { "statusLine": { "type": "command", "command": "unitsense-agent statusline" } }
+
+If you already have your own statusLine, setup keeps it: it saves your command
+and this one runs it for you after capturing quota, printing its output so your
+status line looks the same. 'unitsense-agent reset' puts your original back.`,
 	// Never fail: a non-zero exit or noisy error would break the user's status
 	// line. Capture is best-effort; rendering always succeeds.
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		raw, _ := io.ReadAll(os.Stdin)
-		var in statuslineInput
-		if len(raw) == 0 || json.Unmarshal(raw, &in) != nil {
+		in, parsed := parseStatuslineInput(raw)
+		if parsed {
+			captureQuota(in)
+		}
+		// The user's own statusLine (if setup chained one) decides what is
+		// shown; ours is only the fallback.
+		if out, ok := runChainedStatusline(raw); ok {
+			_, _ = os.Stdout.Write(out)
+			return nil
+		}
+		if !parsed {
 			fmt.Fprint(os.Stdout, "unitsense")
 			return nil
 		}
-		captureQuota(in)
 		fmt.Fprint(os.Stdout, renderStatusline(in))
 		return nil
 	},
 }
 
 func init() { RegisterCommand(statuslineCmd) }
+
+// parseStatuslineInput decodes Claude Code's statusLine JSON. Some Windows
+// shells prefix piped text with a UTF-8 byte-order mark, which encoding/json
+// rejects, so it is stripped first and a valid payload still parses.
+func parseStatuslineInput(raw []byte) (statuslineInput, bool) {
+	var in statuslineInput
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+	if len(raw) == 0 || json.Unmarshal(raw, &in) != nil {
+		return in, false
+	}
+	return in, true
+}
 
 // isUnitsenseStatuslineCommand reports whether c looks like a prior
 // "<some unitsense-agent binary> statusline" entry, regardless of exact
@@ -74,10 +99,27 @@ func isUnitsenseStatuslineCommand(c string) bool {
 	return strings.Contains(c, "unitsense-agent") && strings.HasSuffix(strings.TrimSpace(c), "statusline")
 }
 
+// selfStatuslineCommand is the exact statusLine command that runs THIS binary.
+// The executable path is quoted (never the "statusline" argument) so it works
+// when the install path or username contains spaces: Claude Code runs a
+// "type": "command" statusLine through a shell, where an unquoted path would
+// be split at the space and fail silently. fmt's %q is NOT used -- it
+// Go-escapes backslashes, which would corrupt a literal Windows path.
+func selfStatuslineCommand() string {
+	self, err := os.Executable()
+	if err != nil || self == "" {
+		self = "unitsense-agent"
+	}
+	return `"` + self + `" statusline`
+}
+
 // ensureClaudeStatusline wires this binary as Claude Code's statusLine command
-// so live subscription quota gets captured. Non-destructive: it never clobbers
-// an existing statusLine (just tells the user how to add capture). Returns a
-// human-readable note for setup to print, or "" if nothing to say.
+// so live subscription quota gets captured. Non-destructive: an existing
+// statusLine of the user's is never lost -- it is saved and run by this
+// binary after capture (see statusline_chain.go), so their status line keeps
+// working and `reset` can restore it. A dead entry of ours (e.g. a leftover
+// test binary) is repaired in place. Returns a human-readable note for setup
+// to print, or "" if nothing to say.
 func ensureClaudeStatusline() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -86,19 +128,7 @@ func ensureClaudeStatusline() string {
 	dir := filepath.Join(home, ".claude")
 	path := filepath.Join(dir, "settings.json")
 
-	self, err := os.Executable()
-	if err != nil || self == "" {
-		self = "unitsense-agent"
-	}
-	// Claude Code invokes a "type": "command" statusLine through a shell, so
-	// an unquoted path containing a space (e.g. "C:\Users\Jane Doe\...") gets
-	// split at the space and fails as "not recognized as a command" --
-	// silently, since statusLine errors don't surface anywhere visible. Quote
-	// the executable path (never the "statusline" argument) so this works
-	// regardless of whether the install path or username contains spaces.
-	// fmt's %q is NOT used here -- it Go-escapes backslashes (\ -> \\), which
-	// would corrupt a literal Windows path meant for cmd.exe, not Go source.
-	cmdStr := `"` + self + `" statusline`
+	cmdStr := selfStatuslineCommand()
 
 	settings := map[string]any{}
 	if data, err := os.ReadFile(path); err == nil {
@@ -111,12 +141,16 @@ func ensureClaudeStatusline() string {
 			c, _ := m["command"].(string)
 			switch {
 			case c == cmdStr:
+				if loadChain() != nil {
+					return "Claude Code statusLine already wired for quota capture (your own status line is kept and still runs)."
+				}
 				return "Claude Code statusLine already wired for quota capture."
-			case isUnitsenseStatuslineCommand(c):
+			case isUnitsenseStatuslineCommand(c) || isDeadStatuslineCommand(c):
 				// Points at unitsense-agent but from a stale binary path (e.g.
-				// a reinstall moved the binary to a new location) -- rewrite it
-				// in place rather than silently leaving quota capture broken,
-				// which is exactly what happened before this fix.
+				// a reinstall moved the binary to a new location), or at an
+				// executable that no longer exists at all (e.g. a leftover test
+				// binary) -- rewrite it in place rather than silently leaving
+				// quota capture broken, which is exactly what happened before.
 				m["command"] = cmdStr
 				settings["statusLine"] = m
 				data, err := json.MarshalIndent(settings, "", "  ")
@@ -124,6 +158,27 @@ func ensureClaudeStatusline() string {
 					return "Updated Claude Code statusLine — it was pointing at a stale binary location."
 				}
 				return fmt.Sprintf("statusLine points at a stale path (%s) — couldn't rewrite it, re-add manually: %q", c, cmdStr)
+			case c != "":
+				// The user's own status line. Keep it: save it verbatim, point
+				// Claude Code at us, and run theirs after capturing quota.
+				if err := saveChain(m); err != nil {
+					return fmt.Sprintf("You already have a Claude Code statusLine, and saving it failed (%v) — "+
+						"to capture subscription quota, call %q from it (it prints a status line on stdout).", err, cmdStr)
+				}
+				wrapped := map[string]any{}
+				for k, v := range m {
+					wrapped[k] = v
+				}
+				wrapped["command"] = cmdStr
+				settings["statusLine"] = wrapped
+				data, err := json.MarshalIndent(settings, "", "  ")
+				if err != nil || os.WriteFile(path, append(data, '\n'), 0o644) != nil {
+					removeChain() // nothing changed in settings, so don't leave a stale copy
+					return fmt.Sprintf("You already have a Claude Code statusLine — couldn't update %s; "+
+						"to capture subscription quota, call %q from it.", path, cmdStr)
+				}
+				return "Kept your existing Claude Code statusLine and added live quota capture to it " +
+					"(your status line looks the same). `unitsense-agent reset` restores the original."
 			}
 		}
 		return fmt.Sprintf("You already have a Claude Code statusLine — to capture subscription quota, "+

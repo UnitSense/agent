@@ -30,6 +30,11 @@ var resetCmd = &cobra.Command{
 				return fmt.Errorf("cancelled")
 			}
 		}
+		// Put the user's own Claude Code statusLine back (if setup chained one)
+		// before the directory holding the saved copy is deleted.
+		if note := restoreClaudeStatusline(); note != "" {
+			fmt.Println(note)
+		}
 		return os.RemoveAll(dir)
 	},
 }
