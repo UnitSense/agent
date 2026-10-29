@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "codex-cli-parser-0.8.0" // 0.8.0: fix session_meta being window-filtered for sessions older than the lookback, which silently dropped their session count (tokens/tools still counted correctly)
+const ParserVersionConst = "codex-cli-parser-0.8.1" // 0.8.1: drop session summaries whose session_date is outside the server's accepted range instead of posting them and poisoning the whole batch (see IsPostableSessionDate)
 
 // Codex tool-name categorization. Codex CLI emits a small set of canonical
 // names so the mapping is short.
@@ -572,6 +572,19 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 			s.RepoRemoteHash = h.RepoRemoteHash
 			s.BranchName = h.BranchName
 			s.CommitSHAs = h.CommitSHAs
+		}
+
+		// A resumed session (Codex keeps appending to the same rollout file
+		// across long gaps) can have real activity inside this run's window
+		// while session_meta -- its true, unclamped start date -- is far
+		// older than the server's 90-day acceptance range. Posting it would
+		// fail validation and drop every other session in the same batch
+		// (see IsPostableSessionDate), so it's excluded here. Its tokens,
+		// tools, and session count for *today's* activity are unaffected --
+		// those come from Aggregate, which buckets by each event's own
+		// in-window timestamp, not session_meta's date.
+		if !parsers.IsPostableSessionDate(s.SessionDate, window.To) {
+			continue
 		}
 
 		out = append(out, s)

@@ -14,7 +14,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/githints"
 )
 
-const ParserVersionConst = "claude-code-parser-0.9.0" // 0.9.0: authoritative rate-limit/quota via statusline capture (ratelimits.go)
+const ParserVersionConst = "claude-code-parser-0.9.1" // 0.9.1: drop session summaries whose session_date is outside the server's accepted range instead of posting them and poisoning the whole batch (see IsPostableSessionDate)
 
 // Tool category buckets. Anything not matching defaults to "other".
 var toolCategory = map[string]string{
@@ -525,6 +525,16 @@ func (p *Parser) AggregateSessions(window parsers.TimeWindow) ([]parsers.Session
 				}
 				s.CommitSHAs = h.CommitSHAs
 			}
+		}
+
+		// Same latent risk as Codex's resumed sessions: a session file whose
+		// true start (session_meta-equivalent: its earliest event) is more
+		// than ~90 days old but has real activity inside this run's window
+		// would fail the server's session_date validation and poison the
+		// whole batch (see IsPostableSessionDate). Excluded here; its
+		// in-window tokens/tools/session count still land via Aggregate.
+		if !parsers.IsPostableSessionDate(s.SessionDate, window.To) {
+			continue
 		}
 
 		out = append(out, s)

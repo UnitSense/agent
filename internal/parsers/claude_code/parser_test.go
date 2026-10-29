@@ -135,6 +135,58 @@ func TestAggregateSessions(t *testing.T) {
 	}
 }
 
+// TestAggregateSessionsDropsSessionOlderThanServerLimit covers a slower path
+// to the same server-side failure Codex hits via resumed sessions: this
+// parser's own "never leave a gap" watermark logic (cli/run.go) extends
+// window.From back to the last successful run if the agent hasn't synced in
+// a long time (machine asleep/offline for 90+ days, then reconnected). Any
+// session whose activity falls that far back gets a SessionDate the server's
+// "session_date must be within [today-90d, today+1d]" validation will
+// reject -- and since the server validates the whole batch before writing
+// anything, one such session would silently discard every other valid
+// session in the same POST. AggregateSessions must exclude it; Aggregate
+// (which buckets by each event's own in-window timestamp) still counts it.
+func TestAggregateSessionsDropsSessionOlderThanServerLimit(t *testing.T) {
+	dir := t.TempDir()
+
+	now := time.Now().UTC()
+	old := now.AddDate(0, 0, -120) // well past the server's 90-day cutoff
+
+	content := fmt.Sprintf(
+		`{"type":"summary","sessionId":"sess-stale-1","timestamp":"%s"}
+{"type":"user","sessionId":"sess-stale-1","timestamp":"%s","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}
+`,
+		old.Format(time.RFC3339), old.Add(time.Minute).Format(time.RFC3339),
+	)
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewParser(dir)
+	// Mirrors a gap-filled window: far wider than any normal lookback.
+	window := parsers.TimeWindow{From: now.AddDate(0, 0, -130), To: now.Add(time.Hour)}
+
+	sessions, err := p.AggregateSessions(window)
+	if err != nil {
+		t.Fatalf("AggregateSessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("expected the stale session to be dropped (would 422 and poison the batch), got %d", len(sessions))
+	}
+
+	aggs, err := p.Aggregate(window)
+	if err != nil {
+		t.Fatalf("Aggregate: %v", err)
+	}
+	var total int
+	for _, a := range aggs {
+		total += a.SessionCount
+	}
+	if total != 1 {
+		t.Errorf("Aggregate: expected total SessionCount 1 across all days, got %d", total)
+	}
+}
+
 func TestParseEmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	p := NewParser(dir)
@@ -166,12 +218,12 @@ func TestProvider(t *testing.T) {
 	}
 }
 
-// TestParserVersionBump verifies the version constant reflects v0.9.0
-// (0.9.0 replaced estimated quota with authoritative statusline capture — see
-// ratelimits.go + cli/statusline.go).
+// TestParserVersionBump verifies the version constant reflects v0.9.1
+// (0.9.1 drops session summaries whose session_date falls outside the
+// server's accepted range instead of posting them — see parser.go).
 func TestParserVersionBump(t *testing.T) {
-	if ParserVersionConst != "claude-code-parser-0.9.0" {
-		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.9.0", ParserVersionConst)
+	if ParserVersionConst != "claude-code-parser-0.9.1" {
+		t.Errorf("ParserVersionConst = %q, want claude-code-parser-0.9.1", ParserVersionConst)
 	}
 }
 

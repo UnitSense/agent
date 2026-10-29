@@ -85,6 +85,29 @@ type SessionSummary struct {
 	ParentSessionKey string
 }
 
+// maxSessionAgeDays mirrors the server's validation window for session_date
+// (dashboard/src/lib/agent-payload-schema.ts: "session_date must be within
+// [today-90d, today+1d]"), with a 1-day safety margin for clock skew between
+// the agent's machine and the server.
+const maxSessionAgeDays = 89
+
+// IsPostableSessionDate reports whether a session's date falls inside the
+// range the server will accept. session_meta (the one place a session's true
+// start date comes from) is read regardless of the sync window so a resumed
+// session's identity and in-window activity are never dropped (see
+// AggregateSessions in each parser) -- but a session that was first started
+// more than ~90 days ago still carries that old date. The server validates an
+// entire sessions POST before writing anything, so a single out-of-range
+// session silently discards every other valid session in the same batch.
+// Callers must drop sessions that fail this check before posting, rather
+// than let the server reject the whole request.
+func IsPostableSessionDate(sessionDate, now time.Time) bool {
+	floor := now.AddDate(0, 0, -maxSessionAgeDays).Truncate(24 * time.Hour)
+	ceiling := now.AddDate(0, 0, 1).Truncate(24 * time.Hour)
+	d := sessionDate.Truncate(24 * time.Hour)
+	return !d.Before(floor) && !d.After(ceiling)
+}
+
 type Parser interface {
 	Provider() string      // "agent_claude_code"
 	Tool() string          // "claude_code"
