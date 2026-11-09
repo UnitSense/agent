@@ -16,6 +16,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/claude_code"
 	"github.com/UnitSense/agent/internal/parsers/codex_cli"
 	"github.com/UnitSense/agent/internal/parsers/hermes"
+	"github.com/UnitSense/agent/internal/runlog"
 	"github.com/UnitSense/agent/internal/schedule"
 	"github.com/UnitSense/agent/internal/state"
 	"github.com/google/uuid"
@@ -131,108 +132,22 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	runlogPath := filepath.Join(filepath.Dir(cfgPath), "run.log")
 	totalSent := 0
 	var firstErr error
 
 	for _, p := range parserList {
-		aggs, err := p.Aggregate(tw)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "parser %s error: %v\n", p.Tool(), err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+		entry := runlog.Entry{Time: time.Now(), Provider: p.Provider(), Outcome: runlog.OutcomeOK}
+		if err := syncProvider(cl, p, tw, cfg, runDry, &entry); err != nil && firstErr == nil {
+			firstErr = err
 		}
-		if len(aggs) > 0 {
-			events := aggregatesToEvents(aggs)
-			req := client.EventsRequest{
-				RequestID:     uuid.New(),
-				AgentVersion:  Version,
-				ParserVersion: p.ParserVersion(),
-				Provider:      p.Provider(),
-				Events:        events,
-			}
-			if runDry {
-				fmt.Printf("--- DRY: %s events ---\n", p.Provider())
-				fmt.Printf("request_id=%s events=%d\n", req.RequestID, len(events))
-			} else {
-				resp, err := cl.PostEvents(req)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "post events (%s): %v\n", p.Provider(), err)
-					if firstErr == nil {
-						firstErr = err
-					}
-				} else {
-					totalSent += resp.AcceptedCount
-					fmt.Printf("%s: %d events accepted (run=%s)\n", p.Provider(), resp.AcceptedCount, resp.RunID)
-				}
-			}
+		// A --dry run never contacts the server and never advances any real
+		// state; logging it would make the diary look like a sync happened
+		// when nothing left this machine.
+		if !runDry {
+			_ = runlog.Append(runlogPath, entry)
 		}
-
-		// Per-session emission (added in agent v0.4.0). Sessions enrich the
-		// daily aggregate path; if AggregateSessions returns nothing, skip.
-		sessions, sErr := p.AggregateSessions(tw)
-		if sErr != nil {
-			fmt.Fprintf(os.Stderr, "parser %s sessions error: %v\n", p.Tool(), sErr)
-			if firstErr == nil {
-				firstErr = sErr
-			}
-			continue
-		}
-		if len(sessions) == 0 {
-			continue
-		}
-		sessEvents := sessionsToPayload(sessions, cfg.MachineID.String())
-		sessReq := client.SessionsRequest{
-			RequestID:        uuid.New(),
-			AgentVersion:     Version,
-			ParserVersion:    p.ParserVersion(),
-			Provider:         p.Provider(),
-			SessionSummaries: sessEvents,
-		}
-		if runDry {
-			fmt.Printf("--- DRY: %s sessions ---\n", p.Provider())
-			fmt.Printf("request_id=%s sessions=%d\n", sessReq.RequestID, len(sessEvents))
-			continue
-		}
-		sessResp, err := cl.PostSessions(sessReq)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "post sessions (%s): %v\n", p.Provider(), err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		fmt.Printf("%s: %d sessions accepted (run=%s)\n", p.Provider(), sessResp.AcceptedCount, sessResp.RunID)
-
-		// Subscription quota snapshot (optional capability). Only parsers whose
-		// source files carry it (Codex) or can estimate it (Claude) implement
-		// RateLimitReader; the rest are skipped.
-		if rl, ok := p.(parsers.RateLimitReader); ok {
-			snap, rErr := rl.LatestRateLimit(tw)
-			if rErr != nil {
-				fmt.Fprintf(os.Stderr, "parser %s rate-limit error: %v\n", p.Tool(), rErr)
-			} else if snap != nil {
-				rlReq := client.RateLimitsRequest{
-					RequestID:     uuid.New(),
-					AgentVersion:  Version,
-					ParserVersion: p.ParserVersion(),
-					Provider:      p.Provider(),
-					Snapshots:     []map[string]any{rateLimitToPayload(snap, cfg.MachineID.String())},
-				}
-				if runDry {
-					fmt.Printf("--- DRY: %s rate-limits ---\n", p.Provider())
-					fmt.Printf("request_id=%s plan=%s estimated=%t\n", rlReq.RequestID, snap.PlanType, snap.Estimated)
-				} else if rlResp, err := cl.PostRateLimits(rlReq); err != nil {
-					fmt.Fprintf(os.Stderr, "post rate-limits (%s): %v\n", p.Provider(), err)
-					if firstErr == nil {
-						firstErr = err
-					}
-				} else {
-					fmt.Printf("%s: %d rate-limit snapshot accepted (run=%s)\n", p.Provider(), rlResp.AcceptedCount, rlResp.RunID)
-				}
-			}
-		}
+		totalSent += entry.Confirmed
 	}
 
 	duration := time.Since(start)
@@ -256,6 +171,140 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	_ = state.Save(statePath, st)
 	return firstErr
+}
+
+// syncProvider runs one parser's full sync (events, sessions, rate limits)
+// and fills in entry's events-pipeline numbers (found/sent/confirmed,
+// latest date) and outcome/detail. The events pipeline feeds
+// agent_coding_session_day -- the thing a frozen sync looks like from the
+// server side -- so that's what found/sent/confirmed describe; a failure
+// anywhere else in this provider's run (sessions, rate limits) still marks
+// the entry failed, with its own detail, but doesn't touch those numbers.
+//
+// Only the first error marks the entry failed and sets Detail, matching the
+// existing "first error wins" semantics the caller already used for the
+// run's overall exit status -- so this returns that same first error.
+func syncProvider(cl *client.Client, p parsers.Parser, tw parsers.TimeWindow, cfg *config.Config, dry bool, entry *runlog.Entry) error {
+	var firstErr error
+	fail := func(err error, detail string) {
+		if firstErr == nil {
+			firstErr = err
+		}
+		if entry.Outcome == runlog.OutcomeOK {
+			entry.Outcome = runlog.OutcomeFail
+			entry.Detail = detail
+		}
+	}
+
+	aggs, err := p.Aggregate(tw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "parser %s error: %v\n", p.Tool(), err)
+		fail(err, "parse error: "+err.Error())
+		return firstErr
+	}
+	entry.Found = len(aggs)
+	entry.LatestDate = latestDateString(aggs)
+
+	if len(aggs) > 0 {
+		events := aggregatesToEvents(aggs)
+		entry.Sent = len(events)
+		req := client.EventsRequest{
+			RequestID:     uuid.New(),
+			AgentVersion:  Version,
+			ParserVersion: p.ParserVersion(),
+			Provider:      p.Provider(),
+			Events:        events,
+		}
+		if dry {
+			fmt.Printf("--- DRY: %s events ---\n", p.Provider())
+			fmt.Printf("request_id=%s events=%d\n", req.RequestID, len(events))
+		} else {
+			resp, err := cl.PostEvents(req)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "post events (%s): %v\n", p.Provider(), err)
+				fail(err, "post events: "+err.Error())
+			} else {
+				entry.Confirmed = resp.AcceptedCount
+				fmt.Printf("%s: %d events accepted (run=%s)\n", p.Provider(), resp.AcceptedCount, resp.RunID)
+			}
+		}
+	} else if entry.Outcome == runlog.OutcomeOK {
+		entry.Detail = "no new activity"
+	}
+
+	// Per-session emission (added in agent v0.4.0). Sessions enrich the
+	// daily aggregate path; if AggregateSessions returns nothing, skip.
+	sessions, sErr := p.AggregateSessions(tw)
+	if sErr != nil {
+		fmt.Fprintf(os.Stderr, "parser %s sessions error: %v\n", p.Tool(), sErr)
+		fail(sErr, "sessions: "+sErr.Error())
+		return firstErr
+	}
+	if len(sessions) == 0 {
+		return firstErr
+	}
+	sessEvents := sessionsToPayload(sessions, cfg.MachineID.String())
+	sessReq := client.SessionsRequest{
+		RequestID:        uuid.New(),
+		AgentVersion:     Version,
+		ParserVersion:    p.ParserVersion(),
+		Provider:         p.Provider(),
+		SessionSummaries: sessEvents,
+	}
+	if dry {
+		fmt.Printf("--- DRY: %s sessions ---\n", p.Provider())
+		fmt.Printf("request_id=%s sessions=%d\n", sessReq.RequestID, len(sessEvents))
+		return firstErr
+	}
+	sessResp, err := cl.PostSessions(sessReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "post sessions (%s): %v\n", p.Provider(), err)
+		fail(err, "post sessions: "+err.Error())
+		return firstErr
+	}
+	fmt.Printf("%s: %d sessions accepted (run=%s)\n", p.Provider(), sessResp.AcceptedCount, sessResp.RunID)
+
+	// Subscription quota snapshot (optional capability). Only parsers whose
+	// source files carry it (Codex) or can estimate it (Claude) implement
+	// RateLimitReader; the rest are skipped.
+	if rl, ok := p.(parsers.RateLimitReader); ok {
+		snap, rErr := rl.LatestRateLimit(tw)
+		if rErr != nil {
+			fmt.Fprintf(os.Stderr, "parser %s rate-limit error: %v\n", p.Tool(), rErr)
+		} else if snap != nil {
+			rlReq := client.RateLimitsRequest{
+				RequestID:     uuid.New(),
+				AgentVersion:  Version,
+				ParserVersion: p.ParserVersion(),
+				Provider:      p.Provider(),
+				Snapshots:     []map[string]any{rateLimitToPayload(snap, cfg.MachineID.String())},
+			}
+			if dry {
+				fmt.Printf("--- DRY: %s rate-limits ---\n", p.Provider())
+				fmt.Printf("request_id=%s plan=%s estimated=%t\n", rlReq.RequestID, snap.PlanType, snap.Estimated)
+			} else if rlResp, err := cl.PostRateLimits(rlReq); err != nil {
+				fmt.Fprintf(os.Stderr, "post rate-limits (%s): %v\n", p.Provider(), err)
+				fail(err, "post rate-limits: "+err.Error())
+			} else {
+				fmt.Printf("%s: %d rate-limit snapshot accepted (run=%s)\n", p.Provider(), rlResp.AcceptedCount, rlResp.RunID)
+			}
+		}
+	}
+
+	return firstErr
+}
+
+// latestDateString returns the maximum DateString among aggs ("" if aggs is
+// empty). Dates are "YYYY-MM-DD", so lexicographic comparison is also
+// chronological comparison.
+func latestDateString(aggs []parsers.DayAggregate) string {
+	latest := ""
+	for _, a := range aggs {
+		if a.DateString > latest {
+			latest = a.DateString
+		}
+	}
+	return latest
 }
 
 // reconcileSchedule updates the OS-scheduled task if the server recommends a
