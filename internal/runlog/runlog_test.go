@@ -171,6 +171,107 @@ func TestAppendRespectsRealMaxLines(t *testing.T) {
 	}
 }
 
+// TestParseLineRoundTripsFormat confirms ParseLine reverses Format exactly
+// for every field, including an entry with no LatestDate/Detail at all.
+func TestParseLineRoundTripsFormat(t *testing.T) {
+	e := Entry{
+		Time:       time.Date(2026, 11, 9, 10, 10, 4, 0, time.UTC),
+		Provider:   "codex_cli",
+		Outcome:    OutcomeFail,
+		Found:      8,
+		Sent:       8,
+		Confirmed:  0,
+		LatestDate: "2026-11-01",
+		Detail:     "server 500",
+	}
+	got, ok := ParseLine(Format(e))
+	if !ok {
+		t.Fatalf("ParseLine() returned ok=false for a line Format() itself wrote")
+	}
+	if !got.Time.Equal(e.Time) || got.Provider != e.Provider || got.Outcome != e.Outcome ||
+		got.Found != e.Found || got.Sent != e.Sent || got.Confirmed != e.Confirmed ||
+		got.LatestDate != e.LatestDate || got.Detail != e.Detail {
+		t.Errorf("ParseLine(Format(e)) = %+v, want %+v", got, e)
+	}
+}
+
+// TestParseLineRoundTripsDetailWithSpacesAndQuotes confirms a detail string
+// containing spaces and an embedded quote survives Format -> ParseLine,
+// since that's exactly the shape of a raw server error body.
+func TestParseLineRoundTripsDetailWithSpacesAndQuotes(t *testing.T) {
+	e := Entry{
+		Time:     time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC),
+		Provider: "codex_cli",
+		Outcome:  OutcomeFail,
+		Detail:   `HTTP 400: {"error":"bad"}`,
+	}
+	got, ok := ParseLine(Format(e))
+	if !ok {
+		t.Fatalf("ParseLine() returned ok=false")
+	}
+	if got.Detail != e.Detail {
+		t.Errorf("Detail = %q, want %q", got.Detail, e.Detail)
+	}
+}
+
+func TestParseLineRejectsGarbage(t *testing.T) {
+	if _, ok := ParseLine("not a diary line at all"); ok {
+		t.Errorf("ParseLine() = ok=true for garbage input, want false")
+	}
+}
+
+// TestLatestPerProviderPicksMostRecentEntryPerProvider confirms that when
+// the same provider appears more than once in the tail (consecutive runs),
+// the newest one wins -- not the first or last by file position, by Time.
+func TestLatestPerProviderPicksMostRecentEntryPerProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.log")
+
+	base := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	entries := []Entry{
+		{Time: base, Provider: "claude_code", Outcome: OutcomeOK, Found: 1, Sent: 1, Confirmed: 1},
+		{Time: base, Provider: "codex_cli", Outcome: OutcomeFail, Detail: "first failure"},
+		{Time: base.Add(10 * time.Minute), Provider: "claude_code", Outcome: OutcomeOK, Found: 2, Sent: 2, Confirmed: 2},
+		{Time: base.Add(10 * time.Minute), Provider: "codex_cli", Outcome: OutcomeOK, Detail: "no new activity"},
+	}
+	for _, e := range entries {
+		if err := Append(path, e); err != nil {
+			t.Fatalf("Append() error = %v", err)
+		}
+	}
+
+	latest, err := LatestPerProvider(path, 10)
+	if err != nil {
+		t.Fatalf("LatestPerProvider() error = %v", err)
+	}
+	if len(latest) != 2 {
+		t.Fatalf("got %d providers, want 2: %+v", len(latest), latest)
+	}
+	if latest["claude_code"].Found != 2 {
+		t.Errorf("claude_code.Found = %d, want 2 (the later entry)", latest["claude_code"].Found)
+	}
+	// The most recent codex_cli entry is "ok" -- a prior failure must not
+	// linger once a later run succeeds.
+	if latest["codex_cli"].Outcome != OutcomeOK {
+		t.Errorf("codex_cli.Outcome = %q, want %q (the later, successful entry)", latest["codex_cli"].Outcome, OutcomeOK)
+	}
+}
+
+func TestLatestPerProviderSkipsUnparseableLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.log")
+	if err := os.WriteFile(path, []byte("garbage line\nmore garbage\n"), 0600); err != nil {
+		t.Fatalf("seed write error = %v", err)
+	}
+	latest, err := LatestPerProvider(path, 10)
+	if err != nil {
+		t.Fatalf("LatestPerProvider() error = %v", err)
+	}
+	if len(latest) != 0 {
+		t.Errorf("got %d providers from garbage input, want 0: %+v", len(latest), latest)
+	}
+}
+
 func TestReadLastReturnsNilWhenFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "does-not-exist.log")

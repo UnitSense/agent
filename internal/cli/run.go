@@ -107,6 +107,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	cl := client.New(cfg.ServerURL, cfg.DeviceToken)
 	start := time.Now()
+	runlogPath := filepath.Join(filepath.Dir(cfgPath), "run.log")
 
 	// Check in before doing any real work: in auto-sync mode this just
 	// carries the tenant's configured interval (as before); in manual mode
@@ -114,8 +115,26 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// not, this run does nothing further -- the whole point of manual mode
 	// is a real sync only happens when explicitly requested, not on every
 	// scheduled tick.
+	//
+	// Piggybacks the previous run's diary entries (one per provider) onto
+	// this same call -- the current run hasn't parsed or posted anything
+	// yet, so "recent status" is necessarily what the last run actually did.
 	if !runDry {
-		ci, ciErr := cl.CheckIn(client.CheckInRequest{AgentVersion: Version})
+		var recentStatus []client.RunStatus
+		if latest, rlErr := runlog.LatestPerProvider(runlogPath, 20); rlErr == nil {
+			for _, e := range latest {
+				recentStatus = append(recentStatus, client.RunStatus{
+					Provider:   e.Provider,
+					Outcome:    e.Outcome,
+					Found:      e.Found,
+					Sent:       e.Sent,
+					Confirmed:  e.Confirmed,
+					LatestDate: e.LatestDate,
+					Detail:     e.Detail,
+				})
+			}
+		}
+		ci, ciErr := cl.CheckIn(client.CheckInRequest{AgentVersion: Version, RecentStatus: recentStatus})
 		if ciErr != nil {
 			fmt.Fprintf(os.Stderr, "check-in: %v\n", ciErr)
 		} else {
@@ -132,7 +151,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	runlogPath := filepath.Join(filepath.Dir(cfgPath), "run.log")
 	totalSent := 0
 	var firstErr error
 

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +128,67 @@ func ReadLast(path string, n int) ([]string, error) {
 		lines = lines[len(lines)-n:]
 	}
 	return lines, nil
+}
+
+// lineRe mirrors Format's fixed field order exactly: time, provider,
+// outcome, the three required counts, then optional latest= and detail="..."
+// (detail last, since it's the only field that can itself contain spaces).
+var lineRe = regexp.MustCompile(`^(\S+) (\S+) (ok|fail) found=(\d+) sent=(\d+) confirmed=(\d+)(?: latest=(\S+))?(?: detail=("(?:[^"\\]|\\.)*"))?$`)
+
+// ParseLine reverses Format. Returns false for anything that isn't a line
+// this package itself wrote -- a diary a person edited by hand, or a
+// version skew between agent releases, must never crash the caller.
+func ParseLine(line string) (Entry, bool) {
+	m := lineRe.FindStringSubmatch(line)
+	if m == nil {
+		return Entry{}, false
+	}
+	t, err := time.Parse(time.RFC3339, m[1])
+	if err != nil {
+		return Entry{}, false
+	}
+	found, _ := strconv.Atoi(m[4])
+	sent, _ := strconv.Atoi(m[5])
+	confirmed, _ := strconv.Atoi(m[6])
+	e := Entry{
+		Time:       t,
+		Provider:   m[2],
+		Outcome:    m[3],
+		Found:      found,
+		Sent:       sent,
+		Confirmed:  confirmed,
+		LatestDate: m[7],
+	}
+	if m[8] != "" {
+		if d, err := strconv.Unquote(m[8]); err == nil {
+			e.Detail = d
+		}
+	}
+	return e, true
+}
+
+// LatestPerProvider reads the last n lines of path and returns the most
+// recent entry for each provider found in them (by Time), so a caller can
+// learn "what actually happened last time" without caring how many lines
+// back that was. Unparseable lines are skipped rather than failing the
+// whole read. Returns an empty map (never nil) if the file doesn't exist or
+// has no parseable lines in the tail read.
+func LatestPerProvider(path string, n int) (map[string]Entry, error) {
+	lines, err := ReadLast(path, n)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Entry{}
+	for _, l := range lines {
+		e, ok := ParseLine(l)
+		if !ok {
+			continue
+		}
+		if existing, found := out[e.Provider]; !found || e.Time.After(existing.Time) {
+			out[e.Provider] = e
+		}
+	}
+	return out, nil
 }
 
 func nonEmptyLines(text string) []string {
