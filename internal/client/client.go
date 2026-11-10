@@ -104,8 +104,27 @@ type RateLimitsResponse struct {
 // whether this run should actually sync (always, in auto mode; only when a
 // manual "Sync now" request is pending, in manual mode) and what interval
 // to run on next.
+//
+// RecentStatus piggybacks the agent's local run diary (internal/runlog) onto
+// this same call: the most recent outcome per provider, as of the *previous*
+// run -- this call happens before the current run does any parsing, so
+// there's nothing fresher to report yet. Omitted (nil) when the diary is
+// empty, e.g. the very first run on a fresh install.
 type CheckInRequest struct {
-	AgentVersion string `json:"agent_version"`
+	AgentVersion string      `json:"agent_version"`
+	RecentStatus []RunStatus `json:"recent_status,omitempty"`
+}
+
+// RunStatus is one provider's entry from the local run diary, shaped for
+// the check-in payload.
+type RunStatus struct {
+	Provider   string `json:"provider"`
+	Outcome    string `json:"outcome"`
+	Found      int    `json:"found"`
+	Sent       int    `json:"sent"`
+	Confirmed  int    `json:"confirmed"`
+	LatestDate string `json:"latest_date,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 type CheckInResponse struct {
