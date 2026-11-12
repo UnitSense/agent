@@ -15,6 +15,13 @@ type State struct {
 	LastError                string `json:"last_error,omitempty"`
 	ConsecutiveFailures      int    `json:"consecutive_failures,omitempty"`
 	ScheduledIntervalMinutes int    `json:"scheduled_interval_minutes,omitempty"`
+
+	// Outcome of the most recent self-update attempt (internal/selfupdate),
+	// held here because the agent exits between scheduled ticks -- reported
+	// on the *next* run's check-in, one cycle late, then cleared, the same
+	// way the runlog diary reports the previous run's sync outcome.
+	LastUpdateOutcome string `json:"last_update_outcome,omitempty"`
+	LastUpdateDetail  string `json:"last_update_detail,omitempty"`
 }
 
 func Load(path string) (*State, error) {
