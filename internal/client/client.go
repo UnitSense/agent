@@ -113,6 +113,16 @@ type RateLimitsResponse struct {
 type CheckInRequest struct {
 	AgentVersion string      `json:"agent_version"`
 	RecentStatus []RunStatus `json:"recent_status,omitempty"`
+	// UpdateStatus reports the outcome of a self-update the agent attempted
+	// on its *previous* run (internal/selfupdate), one cycle late for the
+	// same reason RecentStatus is -- this run hasn't attempted anything yet
+	// when check-in fires.
+	UpdateStatus *UpdateStatus `json:"update_status,omitempty"`
+}
+
+type UpdateStatus struct {
+	Outcome string `json:"outcome"`
+	Detail  string `json:"detail,omitempty"`
 }
 
 // RunStatus is one provider's entry from the local run diary, shaped for
@@ -128,8 +138,9 @@ type RunStatus struct {
 }
 
 type CheckInResponse struct {
-	ShouldSync                     bool `json:"should_sync"`
-	RecommendedSyncIntervalMinutes int  `json:"recommended_sync_interval_minutes"`
+	ShouldSync                     bool   `json:"should_sync"`
+	RecommendedSyncIntervalMinutes int    `json:"recommended_sync_interval_minutes"`
+	LatestAgentVersion             string `json:"latest_agent_version,omitempty"`
 }
 
 func (c *Client) CheckIn(req CheckInRequest) (*CheckInResponse, error) {

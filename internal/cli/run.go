@@ -18,6 +18,7 @@ import (
 	"github.com/UnitSense/agent/internal/parsers/hermes"
 	"github.com/UnitSense/agent/internal/runlog"
 	"github.com/UnitSense/agent/internal/schedule"
+	"github.com/UnitSense/agent/internal/selfupdate"
 	"github.com/UnitSense/agent/internal/state"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -134,11 +135,34 @@ func runRun(cmd *cobra.Command, args []string) error {
 				})
 			}
 		}
-		ci, ciErr := cl.CheckIn(client.CheckInRequest{AgentVersion: Version, RecentStatus: recentStatus})
+		// Reports the previous run's self-update attempt, one cycle late,
+		// same as RecentStatus above -- this run hasn't attempted one yet.
+		var updateStatus *client.UpdateStatus
+		if st.LastUpdateOutcome != "" {
+			updateStatus = &client.UpdateStatus{Outcome: st.LastUpdateOutcome, Detail: st.LastUpdateDetail}
+		}
+		ci, ciErr := cl.CheckIn(client.CheckInRequest{AgentVersion: Version, RecentStatus: recentStatus, UpdateStatus: updateStatus})
 		if ciErr != nil {
 			fmt.Fprintf(os.Stderr, "check-in: %v\n", ciErr)
 		} else {
+			// Reported above; clear so it's sent exactly once.
+			st.LastUpdateOutcome = ""
+			st.LastUpdateDetail = ""
 			reconcileSchedule(st, ci.RecommendedSyncIntervalMinutes)
+
+			// Self-update happens unconditionally here, before the
+			// should_sync check below -- it must not depend on whether this
+			// tick does a real sync (manual-sync mode can go many ticks with
+			// should_sync=false, and that must never delay picking up a new
+			// agent version).
+			if bin, binErr := os.Executable(); binErr != nil {
+				fmt.Fprintf(os.Stderr, "self-update: resolve own binary: %v\n", binErr)
+			} else if result := selfupdate.Apply(Version, ci.LatestAgentVersion, bin, selfupdate.NewReleaseFetcher(), selfupdate.ExecSelfChecker{}); result.Attempted {
+				st.LastUpdateOutcome = result.Outcome
+				st.LastUpdateDetail = result.Detail
+				fmt.Printf("self-update %s -> %s: %s\n", result.FromVersion, result.ToVersion, result.Outcome)
+			}
+
 			if !ci.ShouldSync {
 				fmt.Println("auto sync is off — no sync requested, skipping")
 				st.LastRunDurationMS = int(time.Since(start).Milliseconds())
